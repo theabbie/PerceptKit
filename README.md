@@ -140,8 +140,10 @@ severity ordering perfectly (100% accuracy in the e2e test).
 - [x] Batched inference
 - [x] Browser (`--target web`) package build (`pkg-web/`)
 - [x] Browser demo — three live in-browser demos (classify/score/generate),
-  each generating data + training a model live. `docs/` served by GitHub
-  Pages. Reproducible headlessly: `tests/demo-engine.test.js`.
+  each generating data + training a model live. GitHub Pages serves
+  `docs/` at **https://theabbie.github.io/PerceptKit/**
+  (verified end-to-end rendered in a real browser). Reproducible headlessly:
+  `tests/demo-engine.test.js`.
 
 ### Try the demos
 
