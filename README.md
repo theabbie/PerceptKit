@@ -13,9 +13,10 @@ learns from it, entirely client-side.
 
 ```
 crates/
-  percept-core/   Pure Rust: tensors, transformer, trainer, serialization
+  percept-core/   Pure Rust: tensors, transformer, trainer, corruptions, serialization
   percept-wasm/   wasm-bindgen API surface for JS
-pkg/              Generated JS + wasm bindings (nodejs target; regenerable)
+pkg/              Generated JS + wasm bindings (nodejs target)
+pkg-web/          Generated bindings for the browser (--target web)
 tests/e2e.test.js End-to-end test: full train/save/load cycle in Node
 ```
 
@@ -107,10 +108,36 @@ Binary size: ~210 KB unoptimized (no wasm-opt yet).
   between epochs (call one epoch per tick to keep the UI responsive).
 - Seeds are plain JS numbers (f64) to avoid BigInt friction.
 
+## Corruption generators (self-supervision primitives)
+
+The labeler is a program — supervision is free and infinite:
+
+- **Layout** (`corruptLayout`): `overlap`, `overflow_right`,
+  `overflow_bottom`, `dead_space`, `squeeze` — parameterized severity in
+  [0,1] with per-element labels. Plus `iou` for geometry.
+- **Image**: `toGrayscale` (colorization training), `maskRegion`
+  (inpainting training, returns image+mask), `addNoise`.
+
+**Data-design lesson (found the hard way, documented in the e2e test):**
+regressing *absolute* severity from a corrupted layout has irreducible
+ambiguity — the generator picks which boxes to move via the seed and how
+much via severity, so the same displacement can come from different
+severities. Capacity sweeps plateau at the same loss: that's Bayes error
+of the data design. Fix: **pairwise ranking** with the same base layout
+and seed at two severities — shared noise cancels, and the model learns
+severity ordering perfectly (100% accuracy in the e2e test).
+
+## Interpretability & batching
+
+- `attentionMaps(tokens, n)` + `attentionShapes(n)`: per-layer, per-head
+  (t×t) attention weights — see *which* tokens the scorer attends to.
+- `scoreBatch(tokensFlat, seqLens)`: batched scoring.
+
 ## Roadmap
 
+- [x] Corruption-generator helpers (overlap/overflow/dead-space for layout docs)
+- [x] Attention-map export for interpretability
+- [x] Batched inference
+- [x] Browser (`--target web`) package build (`pkg-web/`)
 - [ ] wasm-opt / size reduction pass
-- [ ] Browser (`--target web`) package build
-- [ ] Corruption-generator helpers (overlap/overflow/dead-space for layout docs)
-- [ ] Attention-map export for interpretability (which tokens made the score bad)
-- [ ] Batched inference
+- [ ] Browser demo app (LLM plans data generation, lib does the ML)

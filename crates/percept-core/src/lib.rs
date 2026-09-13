@@ -25,6 +25,7 @@ pub mod optim;
 pub mod loss;
 pub mod train;
 pub mod patchify;
+pub mod corrupt;
 pub mod serialize;
 
 pub use tensor::Tensor;
@@ -32,3 +33,8 @@ pub use model::{ModelConfig, PerceptModel};
 pub use train::{Trainer, TrainerConfig};
 pub use loss::{LossKind, PairwiseInput};
 pub use patchify::{patchify_image, unpatchify_image, PatchGrid};
+pub use corrupt::{
+    corrupt_layout, to_grayscale, mask_region, add_noise, iou,
+    CorruptedLayout, LayoutCorruption,
+};
+pub use rng::Rng;

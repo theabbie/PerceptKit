@@ -18,6 +18,37 @@ class PerceptModelWasm {
         wasm.__wbg_perceptmodelwasm_free(ptr, 0);
     }
     /**
+     * Attention maps for interpretability. Returns a flat f32 array:
+     * layers x heads x (n_tokens * n_tokens), row-major. Use with
+     * `attentionShapes` to slice.
+     * @param {Float32Array} tokens_flat
+     * @param {number} n_tokens
+     * @returns {Float32Array}
+     */
+    attentionMaps(tokens_flat, n_tokens) {
+        const ptr0 = passArrayF32ToWasm0(tokens_flat, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.perceptmodelwasm_attentionMaps(this.__wbg_ptr, ptr0, len0, n_tokens);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
+     * Shapes for slicing `attentionMaps` output:
+     * [n_layers, n_heads, n_tokens, n_tokens].
+     * @param {number} n_tokens
+     * @returns {Uint32Array}
+     */
+    attentionShapes(n_tokens) {
+        const ret = wasm.perceptmodelwasm_attentionShapes(this.__wbg_ptr, n_tokens);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * The model's config as a JSON string.
      * @returns {string}
      */
@@ -83,6 +114,26 @@ class PerceptModelWasm {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * Batched scoring: many sequences in one call.
+     * `seq_lens[i]` is the token count of sequence i.
+     * @param {Float32Array} tokens_flat
+     * @param {Uint32Array} seq_lens
+     * @returns {Float32Array}
+     */
+    scoreBatch(tokens_flat, seq_lens) {
+        const ptr0 = passArrayF32ToWasm0(tokens_flat, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray32ToWasm0(seq_lens, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.perceptmodelwasm_scoreBatch(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v3 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v3;
     }
     /**
      * Score a token sequence: flat f32 array, row-major (n_tokens x in_channels).
@@ -253,6 +304,99 @@ if (Symbol.dispose) TrainerWasm.prototype[Symbol.dispose] = TrainerWasm.prototyp
 exports.TrainerWasm = TrainerWasm;
 
 /**
+ * Additive uniform noise; severity in [0,1].
+ * @param {Float32Array} img
+ * @param {number} severity
+ * @param {number} seed
+ * @returns {Float32Array}
+ */
+function addNoise(img, severity, seed) {
+    const ptr0 = passArrayF32ToWasm0(img, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.addNoise(ptr0, len0, severity, seed);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v2;
+}
+exports.addNoise = addNoise;
+
+/**
+ * Apply a layout corruption. `boxes_flat` is (n_boxes x 4): x, y, w, h.
+ * `kind` is one of: "overlap", "overflow_right", "overflow_bottom",
+ * "dead_space", "squeeze". Returns corrupted boxes (n x 4).
+ * @param {Float32Array} boxes_flat
+ * @param {string} kind
+ * @param {number} severity
+ * @param {number} page_w
+ * @param {number} page_h
+ * @param {number} seed
+ * @returns {Float32Array}
+ */
+function corruptLayout(boxes_flat, kind, severity, page_w, page_h, seed) {
+    const ptr0 = passArrayF32ToWasm0(boxes_flat, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.corruptLayout(ptr0, len0, ptr1, len1, severity, page_w, page_h, seed);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v3;
+}
+exports.corruptLayout = corruptLayout;
+
+/**
+ * Intersection-over-union of two [x, y, w, h] boxes.
+ * @param {Float32Array} a
+ * @param {Float32Array} b
+ * @returns {number}
+ */
+function iou(a, b) {
+    const ptr0 = passArrayF32ToWasm0(a, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF32ToWasm0(b, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.iou(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return ret[0];
+}
+exports.iou = iou;
+
+/**
+ * Remove a rectangular region for inpainting training.
+ * Returns corrupted image (w*h*channels) followed by mask (w*h).
+ * @param {Float32Array} img
+ * @param {number} w
+ * @param {number} h
+ * @param {number} channels
+ * @param {number} x
+ * @param {number} y
+ * @param {number} rw
+ * @param {number} rh
+ * @param {number} fill
+ * @returns {Float32Array}
+ */
+function maskRegion(img, w, h, channels, x, y, rw, rh, fill) {
+    const ptr0 = passArrayF32ToWasm0(img, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.maskRegion(ptr0, len0, w, h, channels, x, y, rw, rh, fill);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v2;
+}
+exports.maskRegion = maskRegion;
+
+/**
  * Patchify an image into token sequences for the model.
  * `img` is a flat f32 array (w*h*channels, channel-interleaved).
  * Returns flat tokens (n_tokens x channels*patch*patch).
@@ -275,6 +419,26 @@ function patchifyImage(img, w, h, patch, channels) {
     return v2;
 }
 exports.patchifyImage = patchifyImage;
+
+/**
+ * Rec. 601 grayscale of an RGB image (w*h*3 -> w*h).
+ * @param {Float32Array} img
+ * @param {number} w
+ * @param {number} h
+ * @returns {Float32Array}
+ */
+function toGrayscale(img, w, h) {
+    const ptr0 = passArrayF32ToWasm0(img, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.toGrayscale(ptr0, len0, w, h);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v2;
+}
+exports.toGrayscale = toGrayscale;
 
 /**
  * Inverse of patchifyImage.
@@ -357,6 +521,11 @@ function _assertClass(instance, klass) {
 function getArrayF32FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
+function getArrayU32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
 }
 
 function getArrayU8FromWasm0(ptr, len) {

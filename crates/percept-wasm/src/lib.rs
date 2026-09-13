@@ -105,6 +105,51 @@ impl PerceptModelWasm {
     pub fn config_json(&self) -> String {
         serde_json::to_string(&self.inner.config).unwrap_or_default()
     }
+
+    /// Attention maps for interpretability. Returns a flat f32 array:
+    /// layers x heads x (n_tokens * n_tokens), row-major. Use with
+    /// `attentionShapes` to slice.
+    #[wasm_bindgen(js_name = "attentionMaps")]
+    pub fn attention_maps(
+        &self,
+        tokens_flat: &[f32],
+        n_tokens: usize,
+    ) -> Result<Vec<f32>, JsError> {
+        let tokens = flat_to_tensor(tokens_flat, n_tokens, self.inner.config.in_channels)?;
+        let maps = self.inner.attention_maps(&tokens).map_err(|e| JsError::new(&e))?;
+        let mut out = Vec::new();
+        for layer in &maps {
+            for head in layer {
+                out.extend_from_slice(head);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Shapes for slicing `attentionMaps` output:
+    /// [n_layers, n_heads, n_tokens, n_tokens].
+    #[wasm_bindgen(js_name = "attentionShapes")]
+    pub fn attention_shapes(&self, n_tokens: usize) -> Vec<usize> {
+        vec![
+            self.inner.config.n_layers,
+            self.inner.config.n_heads,
+            n_tokens,
+            n_tokens,
+        ]
+    }
+
+    /// Batched scoring: many sequences in one call.
+    /// `seq_lens[i]` is the token count of sequence i.
+    #[wasm_bindgen(js_name = "scoreBatch")]
+    pub fn score_batch(
+        &self,
+        tokens_flat: &[f32],
+        seq_lens: &[usize],
+    ) -> Result<Vec<f32>, JsError> {
+        self.inner
+            .score_batch(tokens_flat, seq_lens)
+            .map_err(|e| JsError::new(&e))
+    }
 }
 
 fn flat_to_tensor(flat: &[f32], rows: usize, cols: usize) -> Result<Tensor, JsError> {
@@ -320,6 +365,91 @@ pub fn unpatchify_image(
     let tokens = Tensor { rows: n_tokens, cols: token_dim, data: tokens_flat.to_vec() };
     percept_core::patchify::unpatchify_image(&tokens, &grid, channels)
         .map_err(|e| JsError::new(&e))
+}
+
+// ---------------------------------------------------------------------------
+// Corruption generators (self-supervision primitives)
+// ---------------------------------------------------------------------------
+
+/// Apply a layout corruption. `boxes_flat` is (n_boxes x 4): x, y, w, h.
+/// `kind` is one of: "overlap", "overflow_right", "overflow_bottom",
+/// "dead_space", "squeeze". Returns corrupted boxes (n x 4).
+#[wasm_bindgen(js_name = "corruptLayout")]
+pub fn corrupt_layout(
+    boxes_flat: &[f32],
+    kind: &str,
+    severity: f32,
+    page_w: f32,
+    page_h: f32,
+    seed: f64,
+) -> Result<Vec<f32>, JsError> {
+    let n = boxes_flat.len() / 4;
+    if boxes_flat.len() != n * 4 {
+        return Err(JsError::new("boxes_flat must be a multiple of 4"));
+    }
+    let boxes: Vec<[f32; 4]> = (0..n)
+        .map(|i| [
+            boxes_flat[i * 4],
+            boxes_flat[i * 4 + 1],
+            boxes_flat[i * 4 + 2],
+            boxes_flat[i * 4 + 3],
+        ])
+        .collect();
+    let k = match kind {
+        "overlap" => percept_core::corrupt::LayoutCorruption::Overlap,
+        "overflow_right" => percept_core::corrupt::LayoutCorruption::OverflowRight,
+        "overflow_bottom" => percept_core::corrupt::LayoutCorruption::OverflowBottom,
+        "dead_space" => percept_core::corrupt::LayoutCorruption::DeadSpace,
+        "squeeze" => percept_core::corrupt::LayoutCorruption::Squeeze,
+        _ => return Err(JsError::new(&format!("unknown corruption kind: {kind}"))),
+    };
+    let mut rng = percept_core::Rng::new(seed.to_bits());
+    let out = percept_core::corrupt::corrupt_layout(&boxes, k, severity, page_w, page_h, &mut rng)
+        .map_err(|e| JsError::new(&e))?;
+    Ok(out.boxes.into_iter().flatten().collect())
+}
+
+/// Rec. 601 grayscale of an RGB image (w*h*3 -> w*h).
+#[wasm_bindgen(js_name = "toGrayscale")]
+pub fn to_grayscale(img: &[f32], w: usize, h: usize) -> Result<Vec<f32>, JsError> {
+    percept_core::corrupt::to_grayscale(img, w, h).map_err(|e| JsError::new(&e))
+}
+
+/// Remove a rectangular region for inpainting training.
+/// Returns corrupted image (w*h*channels) followed by mask (w*h).
+#[wasm_bindgen(js_name = "maskRegion")]
+pub fn mask_region(
+    img: &[f32],
+    w: usize,
+    h: usize,
+    channels: usize,
+    x: usize,
+    y: usize,
+    rw: usize,
+    rh: usize,
+    fill: f32,
+) -> Result<Vec<f32>, JsError> {
+    let (out, mask) = percept_core::corrupt::mask_region(img, w, h, channels, x, y, rw, rh, fill)
+        .map_err(|e| JsError::new(&e))?;
+    let mut flat = out;
+    flat.extend(mask);
+    Ok(flat)
+}
+
+/// Additive uniform noise; severity in [0,1].
+#[wasm_bindgen(js_name = "addNoise")]
+pub fn add_noise(img: &[f32], severity: f32, seed: f64) -> Result<Vec<f32>, JsError> {
+    let mut rng = percept_core::Rng::new(seed.to_bits());
+    percept_core::corrupt::add_noise(img, severity, &mut rng).map_err(|e| JsError::new(&e))
+}
+
+/// Intersection-over-union of two [x, y, w, h] boxes.
+#[wasm_bindgen(js_name = "iou")]
+pub fn iou(a: &[f32], b: &[f32]) -> Result<f32, JsError> {
+    if a.len() != 4 || b.len() != 4 {
+        return Err(JsError::new("iou takes two [x,y,w,h] arrays"));
+    }
+    Ok(percept_core::corrupt::iou(&[a[0], a[1], a[2], a[3]], &[b[0], b[1], b[2], b[3]]))
 }
 
 /// Library version string.

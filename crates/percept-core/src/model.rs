@@ -141,6 +141,68 @@ impl PerceptModel {
         })
     }
 
+    /// Attention maps for interpretability: for each layer and head, the
+    /// (t, t) softmax attention weights. Returned as
+    /// `layers[layer][head]` flattened row-major.
+    pub fn attention_maps(&self, tokens: &Tensor) -> Result<Vec<Vec<Vec<f32>>>, String> {
+        let t = self.seq_len(tokens)?;
+        let in_proj = self.in_embed.forward(tokens);
+        let pos = Tensor {
+            rows: t,
+            cols: self.config.d_model,
+            data: self.pos_embed.data[..t * self.config.d_model].to_vec(),
+        };
+        let mut h = in_proj.add(&pos);
+        let mut maps = Vec::with_capacity(self.blocks.len());
+        for block in &self.blocks {
+            // replicate block.forward but keep weights
+            let (n1, _, _) = h.layer_norm(1e-5);
+            // we need the cache's weights; re-run attention forward
+            let (attn_out, attn_cache) = block.attn.forward(&n1);
+            maps.push(
+                attn_cache
+                    .attn_weights
+                    .iter()
+                    .map(|w| w.data.clone())
+                    .collect(),
+            );
+            let h2 = h.add(&attn_out);
+            let (n2, _, _) = h2.layer_norm(1e-5);
+            let (ff, _) = block.mlp.forward(&n2);
+            h = h2.add(&ff);
+        }
+        Ok(maps)
+    }
+
+    /// Batched inference: score many sequences in one call.
+    /// `seq_lens[i]` gives token counts; `tokens_flat` is concatenated.
+    /// Returns one score per sequence.
+    pub fn score_batch(
+        &self,
+        tokens_flat: &[f32],
+        seq_lens: &[usize],
+    ) -> Result<Vec<f32>, String> {
+        if seq_lens.is_empty() {
+            return Err("no sequences".into());
+        }
+        let in_ch = self.config.in_channels;
+        let mut scores = Vec::with_capacity(seq_lens.len());
+        let mut offset = 0usize;
+        for &len in seq_lens {
+            if len == 0 {
+                return Err("empty sequence in batch".into());
+            }
+            let end = offset + len * in_ch;
+            if end > tokens_flat.len() {
+                return Err("tokens_flat too short for seq_lens".into());
+            }
+            let tokens = Tensor { rows: len, cols: in_ch, data: tokens_flat[offset..end].to_vec() };
+            scores.push(self.forward(&tokens)?.global_score.data[0]);
+            offset = end;
+        }
+        Ok(scores)
+    }
+
     /// Backward from a combined gradient signal: `g_global` is grad wrt the
     /// global score (shape (1,1)), `g_dense` is grad wrt the dense output
     /// (shape (t, out_channels)) or `None` to skip the dense path. Accumulates

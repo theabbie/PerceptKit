@@ -14,6 +14,11 @@ const {
   TrainerWasm,
   patchifyImage,
   unpatchifyImage,
+  corruptLayout,
+  toGrayscale,
+  maskRegion,
+  addNoise,
+  iou,
   version,
 } = require("../pkg/percept_wasm.js");
 
@@ -171,6 +176,140 @@ function test() {
     threw = true;
   }
   assert.ok(threw, "bad model bytes should throw");
+
+  // ---- 9. corruption generators ----
+  // layout: overlap corruption must actually collide boxes
+  const cleanBoxes = new Float32Array([
+    10, 10, 20, 8,
+    10, 30, 20, 8,
+    10, 50, 20, 8,
+  ]);
+  const bad = corruptLayout(cleanBoxes, "overlap", 1.0, 100, 100, 42);
+  assert.strictEqual(bad.length, 12);
+  const boxA = [bad[0], bad[1], bad[2], bad[3]];
+  const boxB = [bad[4], bad[5], bad[6], bad[7]];
+  assert.ok(iou(boxA, boxB) > 0, "overlap corruption must collide boxes");
+  // severity 0 must not collide
+  const ok0 = corruptLayout(cleanBoxes, "overlap", 0.0, 100, 100, 42);
+  assert.strictEqual(
+    iou([ok0[0], ok0[1], ok0[2], ok0[3]], [ok0[4], ok0[5], ok0[6], ok0[7]]), 0);
+  // overflow: broken box exceeds page
+  const ovf = corruptLayout(cleanBoxes, "overflow_right", 1.0, 100, 100, 7);
+  let overflowed = false;
+  for (let i = 0; i < 3; i++) {
+    if (ovf[i * 4] + ovf[i * 4 + 2] > 100) overflowed = true;
+  }
+  assert.ok(overflowed, "overflow_right must exceed page width");
+  // determinism: same seed -> same corruption
+  const c1 = corruptLayout(cleanBoxes, "dead_space", 0.8, 100, 100, 99);
+  const c2 = corruptLayout(cleanBoxes, "dead_space", 0.8, 100, 100, 99);
+  for (let i = 0; i < c1.length; i++) assert.strictEqual(c1[i], c2[i]);
+  // bad kind throws
+  threw = false;
+  try { corruptLayout(cleanBoxes, "nope", 0.5, 100, 100, 1); } catch (e) { threw = true; }
+  assert.ok(threw, "unknown corruption kind should throw");
+
+  // image: grayscale
+  const rgb = new Float32Array([1, 0, 0,  0, 1, 0,  0, 0, 1,  1, 1, 1]);
+  const gray = toGrayscale(rgb, 2, 2);
+  assert.strictEqual(gray.length, 4);
+  assert.ok(Math.abs(gray[0] - 0.299) < 1e-6);
+  assert.ok(Math.abs(gray[3] - 1.0) < 1e-6);
+
+  // image: mask region (returns corrupted img then mask)
+  const masked = maskRegion(rgb, 2, 2, 3, 0, 0, 1, 1, -1.0);
+  assert.strictEqual(masked.length, 12 + 4);
+  assert.strictEqual(masked[0], -1.0); // filled pixel
+  assert.strictEqual(masked[12], 1.0); // mask[0]
+  assert.strictEqual(masked[15], 0.0);  // mask[3]
+
+  // image: noise bounded
+  const flat = new Float32Array(500).fill(0.5);
+  const noisy = addNoise(flat, 1.0, 3);
+  let maxDev = 0;
+  for (const v of noisy) maxDev = Math.max(maxDev, Math.abs(v - 0.5));
+  assert.ok(maxDev <= 0.5 + 1e-6 && maxDev > 0.1);
+
+  // ---- 10. attention maps ----
+  const maps = model.attentionMaps(tokensFlat.subarray(0, T * IN), T);
+  const shapes = model.attentionShapes(T);
+  // [layers, heads, t, t]
+  assert.strictEqual(shapes.length, 4);
+  const total = shapes[0] * shapes[1] * shapes[2] * shapes[3];
+  assert.strictEqual(maps.length, total);
+  // every attention row must sum to 1 (softmax)
+  const [L, Hh, Tt] = shapes;
+  for (let l = 0; l < L; l++) {
+    for (let h = 0; h < Hh; h++) {
+      for (let i = 0; i < Tt; i++) {
+        let sum = 0;
+        for (let j = 0; j < Tt; j++) {
+          sum += maps[
+            ((l * Hh + h) * Tt + i) * Tt + j
+          ];
+        }
+        assert.ok(Math.abs(sum - 1.0) < 1e-3,
+          `attention row sum ${sum} at layer ${l} head ${h} row ${i}`);
+      }
+    }
+  }
+
+  // ---- 11. batched scoring ----
+  const batchScores = model.scoreBatch(tokensFlat, seqLens.slice(0, 10));
+  assert.strictEqual(batchScores.length, 10);
+  // must match individual scores
+  for (let s = 0; s < 10; s++) {
+    const single = model.score(
+      tokensFlat.subarray(s * T * IN, (s + 1) * T * IN), T);
+    assert.ok(Math.abs(single - batchScores[s]) < 1e-5,
+      `batch score mismatch at ${s}: ${single} vs ${batchScores[s]}`);
+  }
+
+  // ---- 12. corruption -> train loop (the PerceptKit pattern, end to end) ----
+  // LESSON (found the hard way): regressing absolute severity from a
+  // corrupted layout alone has irreducible ambiguity — the generator picks
+  // WHICH boxes to move via the seed and HOW MUCH via severity, so the same
+  // displacement can come from different severities. Sweeps showed bigger
+  // models plateau at the same loss (~0.05): that's Bayes error of the data
+  // design, not underfitting. The fix is data design, not capacity:
+  // use PAIRWISE RANKING (same base layout, two severities; the noise
+  // cancels because it's shared) — the PerceptKit-idiomatic pattern.
+  const NL = 150, NB = 6;
+  const kinds = ["overlap", "overflow_right", "overflow_bottom", "dead_space", "squeeze"];
+  let betterFlat = new Float32Array(NL * NB * 4);
+  let worseFlat = new Float32Array(NL * NB * 4);
+  let lSeq = new Array(NL).fill(NB);
+  let margins = new Float32Array(NL);
+  let seedCounter = 1;
+  for (let s = 0; s < NL; s++) {
+    const base = new Float32Array(NB * 4);
+    for (let b = 0; b < NB; b++) {
+      base[b * 4] = 10;
+      base[b * 4 + 1] = 10 + b * 15;
+      base[b * 4 + 2] = 20 + (b % 3) * 5;
+      base[b * 4 + 3] = 10;
+    }
+    const kind = kinds[Math.floor(rand() * kinds.length)];
+    const sevLo = rand() * 0.4;       // mild corruption
+    const sevHi = 0.6 + rand() * 0.4; // severe corruption
+    // same seed for both -> same box selection, only severity differs
+    betterFlat.set(corruptLayout(base, kind, sevLo, 100, 100, seedCounter), s * NB * 4);
+    worseFlat.set(corruptLayout(base, kind, sevHi, 100, 100, seedCounter), s * NB * 4);
+    margins[s] = 0.5;
+    seedCounter++;
+  }
+  const layoutModel = new PerceptModelWasm(4, 16, 2, 2, 32, 1, 32, 11);
+  const layoutTrainer = new TrainerWasm(3e-3, 16, 4);
+  let lFirst = null, lLast = null;
+  for (let epoch = 0; epoch < 50; epoch++) {
+    const loss = layoutTrainer.trainPairEpoch(layoutModel, betterFlat, worseFlat, lSeq, margins);
+    if (epoch === 0) lFirst = loss;
+    lLast = loss;
+  }
+  const rankAcc = layoutTrainer.evalPairAccuracy(layoutModel, betterFlat, worseFlat, lSeq);
+  console.log(`layout ranking: loss ${lFirst.toFixed(4)} -> ${lLast.toFixed(4)}, accuracy ${(rankAcc * 100).toFixed(1)}%`);
+  assert.ok(lLast < lFirst / 5, `ranking loss should drop 5x: ${lFirst} -> ${lLast}`);
+  assert.ok(rankAcc > 0.9, `ranking accuracy too low: ${rankAcc}`);
 
   console.log("\nALL E2E TESTS PASSED");
 }
