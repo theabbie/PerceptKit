@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PerceptKit — in-browser self-supervised perception</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --edge:#262b36; --fg:#d7dce4; --dim:#8b93a3; --acc:#4f9cf9; --good:#3fbf7f; --bad:#e0655a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
+  header { padding:20px 24px 8px; }
+  h1 { font-size:20px; margin:0 0 2px; }
+  header p { margin:0; color:var(--dim); font-size:13px; }
+  header a { color:var(--acc); }
+  nav { display:flex; gap:6px; padding:12px 24px 0; flex-wrap:wrap; }
+  nav button { background:var(--panel); border:1px solid var(--edge); color:var(--dim); padding:8px 16px; border-radius:8px 8px 0 0; cursor:pointer; font-size:14px; }
+  nav button.active { color:var(--fg); border-bottom-color:var(--panel); background:var(--panel); }
+  main { padding:16px 24px 40px; max-width:960px; }
+  section { display:none; }
+  section.active { display:block; }
+  .panel { background:var(--panel); border:1px solid var(--edge); border-radius:10px; padding:16px; margin-bottom:14px; }
+  .panel h2 { margin:0 0 4px; font-size:16px; }
+  .panel .sub { color:var(--dim); font-size:13px; margin:0 0 12px; }
+  button.primary { background:var(--acc); color:#fff; border:none; padding:9px 18px; border-radius:8px; cursor:pointer; font-size:14px; }
+  button.primary:disabled { opacity:.45; cursor:default; }
+  button.ghost { background:transparent; color:var(--acc); border:1px solid var(--acc); padding:7px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
+  .bar { height:8px; background:var(--edge); border-radius:4px; overflow:hidden; margin:10px 0 4px; }
+  .bar > div { height:100%; width:0%; background:var(--acc); transition:width .15s; }
+  .status { color:var(--dim); font-size:13px; min-height:1.4em; }
+  .row { display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start; }
+  canvas { image-rendering:pixelated; border:1px solid var(--edge); border-radius:6px; background:#000; }
+  .caption { font-size:12px; color:var(--dim); text-align:center; margin-top:4px; }
+  .score { font-size:22px; font-variant-numeric:tabular-nums; text-align:center; margin-top:2px; }
+  .verdict-good { color:var(--good); } .verdict-bad { color:var(--bad); }
+  table.scores { border-collapse:collapse; font-size:13px; }
+  td.digit { text-align:right; padding:1px 8px 1px 0; color:var(--dim); width:14px; }
+  td.track { width:140px; height:14px; }
+  td.track > div { height:10px; background:var(--edge); border-radius:3px; overflow:hidden; }
+  td.track > div > div { height:100%; background:var(--acc); }
+  td.val { padding-left:8px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  #digitGrid { display:grid; grid-template-columns:repeat(8, 22px); gap:2px; margin:8px 0; }
+  #digitGrid button { width:22px; height:22px; border:1px solid var(--edge); background:#000; border-radius:3px; cursor:pointer; padding:0; }
+  #digitGrid button.on { background:#fff; }
+  .verdict { font-size:26px; text-align:center; margin-top:6px; }
+  .hidden { display:none; }
+  input[type=range] { accent-color:var(--acc); }
+</style>
+</head>
+<body>
+<header>
+  <h1>PerceptKit</h1>
+  <p>A transformer library compiled to WebAssembly — every model below is generated, trained, and evaluated <b>live in your browser</b>. No pretrained weights, no server. <a href="https://github.com/theabbie/PerceptKit">source</a></p>
+</header>
+<nav>
+  <button data-tab="classify" class="active">Classify · digit classifier</button>
+  <button data-tab="score">Score · text-overlap scorer</button>
+  <button data-tab="generate">Generate · colorizer</button>
+</nav>
+<main>
+
+<section id="classify" class="active">
+  <div class="panel">
+    <h2>Digit classifier</h2>
+    <p class="sub">Synthetic 8×10 font digits with random shifts and salt noise are generated in your browser; a tiny transformer (2 layers, d=16, ~9k params) is trained with the dense head to output one-hot digits per token. Then draw your own digit below.</p>
+    <button id="clfTrain" class="primary">Train classifier (~45s)</button>
+    <div class="bar"><div id="clfBar"></div></div>
+    <div class="status" id="clfStatus">Not trained yet.</div>
+  </div>
+  <div class="panel hidden" id="clfPlay">
+    <h2>Draw a digit</h2>
+    <p class="sub">Click cells to toggle pixels. The model classifies after every change.</p>
+    <div class="row">
+      <div>
+        <div id="digitGrid"></div>
+        <button class="ghost" id="clfClear">Clear</button>
+      </div>
+      <div>
+        <table class="scores" id="clfScores"></table>
+        <div class="verdict" id="clfVerdict">—</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="score">
+  <div class="panel">
+    <h2>Text-overlap scorer</h2>
+    <p class="sub">Documents are rendered as line-art images; the corruption generator shifts one line into another (overlap). Trained by <b>pairwise ranking</b> — mild vs severe corruption of the same base doc — because absolute severity has irreducible label ambiguity (see README). Higher score = cleaner layout.</p>
+    <button id="scTrain" class="primary">Train scorer (~5s)</button>
+    <div class="bar"><div id="scBar"></div></div>
+    <div class="status" id="scStatus">Not trained yet.</div>
+  </div>
+  <div class="panel hidden" id="scPlay">
+    <h2>Score a document</h2>
+    <p class="sub">Left: the base layout. Right: same layout with one line corrupted at the chosen severity. The scorer must rank the clean one higher.</p>
+    <div class="row">
+      <div><canvas id="scClean" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">base layout</div><div class="score" id="scCleanScore">—</div></div>
+      <div><canvas id="scBad" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">corrupted</div><div class="score" id="scBadScore">—</div></div>
+      <div>
+        <p style="margin:0 0 6px">corruption severity: <span id="scSevVal">0.8</span></p>
+        <input type="range" id="scSev" min="0" max="100" value="80">
+        <div style="margin-top:10px"><button class="ghost" id="scNew">New document</button></div>
+        <div class="verdict" id="scVerdict">—</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="generate">
+  <div class="panel">
+    <h2>Colorizer</h2>
+    <p class="sub">Synthetic scenes (sky gradient, sun, hills, water) are generated in the browser. The model sees only Rec.601 grayscale, patchified, and the dense head learns to predict the full RGB patch per token — i.e. it must invent color from luminance + context.</p>
+    <button id="colTrain" class="primary">Train colorizer (~8s)</button>
+    <div class="bar"><div id="colBar"></div></div>
+    <div class="status" id="colStatus">Not trained yet.</div>
+  </div>
+  <div class="panel hidden" id="colPlay">
+    <h2>Colorize a scene</h2>
+    <p class="sub">Left: what the model sees (grayscale). Middle: model's colorization. Right: ground truth it never saw.</p>
+    <div class="row">
+      <div><canvas id="colGray" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">input (grayscale)</div></div>
+      <div><canvas id="colOut" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">model colorization</div></div>
+      <div><canvas id="colTrue" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">ground truth</div></div>
+      <div style="align-self:center"><button class="ghost" id="colNew">New scene</button></div>
+    </div>
+  </div>
+</section>
+
+</main>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -139,5 +139,18 @@ severity ordering perfectly (100% accuracy in the e2e test).
 - [x] Attention-map export for interpretability
 - [x] Batched inference
 - [x] Browser (`--target web`) package build (`pkg-web/`)
-- [ ] wasm-opt / size reduction pass
-- [ ] Browser demo app (LLM plans data generation, lib does the ML)
+- [x] Browser demo — three live in-browser demos (classify/score/generate),
+  each generating data + training a model live. `docs/` served by GitHub
+  Pages. Reproducible headlessly: `tests/demo-engine.test.js`.
+
+### Try the demos
+
+- **Classify**: synthetic 8×10 font digits, drawn pixel-grid UI, ~94%
+  held-out after ~45s in-browser training.
+- **Score**: document-layout overlap scorer, pairwise ranking
+  (per the data-design lesson above), 100% pair accuracy in ~5s.
+- **Generate**: grayscale→color scene colorizer; learns "invent color from
+  luminance + context" (MAE ~0.06 flat-baseline ~0.28) in ~8s.
+
+Architecture: `docs/engine.js` is pure (testable headlessly), the wasm is
+injected; `docs/app.js` is the thin UI layer.
