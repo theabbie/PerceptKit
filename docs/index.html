@@ -3,27 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PerceptKit — in-browser self-supervised perception</title>
+<title>PerceptKit — agent + self-supervised transformer labs</title>
 <style>
-  :root { --bg:#0f1115; --panel:#171a21; --edge:#262b36; --fg:#d7dce4; --dim:#8b93a3; --acc:#4f9cf9; --good:#3fbf7f; --bad:#e0655a; }
+  :root { --bg:#0a0a0b; --panel:#111329; --panel2:#111f3a; --edge:#1f2937; --fg:#f4f4f5; --dim:#a1a1aa; --acc:#0ea5e9; --good:#4ade80; --bad:#f87171; }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
-  header { padding:20px 24px 8px; }
-  h1 { font-size:20px; margin:0 0 2px; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 system-ui, sans-serif; }
+  header { padding:18px 24px 6px; display:flex; align-items:baseline; gap:12px; }
+  h1 { font-size:19px; margin:0; }
   header p { margin:0; color:var(--dim); font-size:13px; }
-  header a { color:var(--acc); }
+  header a, nav div a { color:var(--acc); }
   nav { display:flex; gap:6px; padding:12px 24px 0; flex-wrap:wrap; }
-  nav button { background:var(--panel); border:1px solid var(--edge); color:var(--dim); padding:8px 16px; border-radius:8px 8px 0 0; cursor:pointer; font-size:14px; }
-  nav button.active { color:var(--fg); border-bottom-color:var(--panel); background:var(--panel); }
-  main { padding:16px 24px 40px; max-width:960px; }
+  nav button { background:var(--panel); border:1px solid var(--edge); color:var(--dim); padding:8px 16px; border-radius:8px; cursor:pointer; font-size:14px; }
+  nav button.active { color:var(--fg); border-bottom-color:var(--acc); background:var(--panel2); }
+  main { padding:16px 24px 40px; max-width:1100px; }
   section { display:none; }
   section.active { display:block; }
   .panel { background:var(--panel); border:1px solid var(--edge); border-radius:10px; padding:16px; margin-bottom:14px; }
   .panel h2 { margin:0 0 4px; font-size:16px; }
   .panel .sub { color:var(--dim); font-size:13px; margin:0 0 12px; }
-  button.primary { background:var(--acc); color:#fff; border:none; padding:9px 18px; border-radius:8px; cursor:pointer; font-size:14px; }
-  button.primary:disabled { opacity:.45; cursor:default; }
-  button.ghost { background:transparent; color:var(--acc); border:1px solid var(--acc); padding:7px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
+  button.primary { background:var(--acc); color:#082f49; border:none; padding:9px 18px; border-radius:8px; cursor:pointer; font-size:14px; font-weight:600; }
+  button.primary:disabled { opacity:.5; cursor:default; }
+  button.ghost { background:transparent; color:var(--acc); border:1px solid var(--edge); padding:7px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
   .bar { height:8px; background:var(--edge); border-radius:4px; overflow:hidden; margin:10px 0 4px; }
   .bar > div { height:100%; width:0%; background:var(--acc); transition:width .15s; }
   .status { color:var(--dim); font-size:13px; min-height:1.4em; }
@@ -31,7 +31,6 @@
   canvas { image-rendering:pixelated; border:1px solid var(--edge); border-radius:6px; background:#000; }
   .caption { font-size:12px; color:var(--dim); text-align:center; margin-top:4px; }
   .score { font-size:22px; font-variant-numeric:tabular-nums; text-align:center; margin-top:2px; }
-  .verdict-good { color:var(--good); } .verdict-bad { color:var(--bad); }
   table.scores { border-collapse:collapse; font-size:13px; }
   td.digit { text-align:right; padding:1px 8px 1px 0; color:var(--dim); width:14px; }
   td.track { width:140px; height:14px; }
@@ -39,29 +38,96 @@
   td.track > div > div { height:100%; background:var(--acc); }
   td.val { padding-left:8px; color:var(--dim); font-variant-numeric:tabular-nums; }
   #digitGrid { display:grid; grid-template-columns:repeat(8, 22px); gap:2px; margin:8px 0; }
-  #digitGrid button { width:22px; height:22px; border:1px solid var(--edge); background:#000; border-radius:3px; cursor:pointer; padding:0; }
-  #digitGrid button.on { background:#fff; }
-  .verdict { font-size:26px; text-align:center; margin-top:6px; }
+  #digitGrid button { width:22px; height:22px; border:1px solid var(--edge); background:var(--bg); border-radius:3px; cursor:pointer; padding:0; }
+  #digitGrid button.on { background:#e5e7eb; }
+  .verdict { font-size:22px; text-align:center; margin-top:6px; }
   .hidden { display:none; }
   input[type=range] { accent-color:var(--acc); }
+
+  /* ------- Agent panel (slate/zinc/vercel-ish) ------- */
+  .ag-head { display:flex; justify-content:space-between; align-items:flex-end; margin:0 0 12px; }
+  .ag-head h2 { margin:0; }
+  .ag-head .badge { background:var(--panel2); color:var(--acc); border:1px solid var(--edge); padding:3px 10px; border-radius:999px; font-size:11px; font-weight:600; letter-spacing:.5px; text-transform:uppercase; }
+  #agGoal { width:100%; background:var(--panel2); color:var(--fg); border:1px solid var(--edge); border-radius:8px; padding:12px; resize:vertical; min-height:80px; font:14px/1.45 inherit; }
+  #agGoal:focus { outline:1px solid var(--acc); border-color:var(--acc); }
+  .ag-paste { display:flex; gap:8px; }
+  #agPasteRun { width:100%; box-sizing:stretch; border:none; }
+  #agPasteRun:disabled { opacity:.5; }
+  #agRun { flex:1; }
+  #agRun:disabled { opacity:.5; }
+  input[type="submit"], input[type="button"] { background:var(--acc); color:#082f49; border:none; padding:9px 18px; border-radius:8px; cursor:pointer; font-size:14px; font-weight:600; }
+  input[type="submit"]:disabled, input[type="button"]:disabled { opacity:.5; }
+  .ag-report { display:grid; grid-template-columns:1.5fr 1fr; gap:12px; margin-top:12px; }
+  .ag-report .report-pane { background:var(--panel2); border:1px solid var(--edge); border-radius:8px; padding:10px; max-height:280px; overflow:auto; font:13px/1.5 ui-monospace, Menlo, monospace; }
+  .ag-report .review-pane { background:var(--panel2); border:1px solid var(--edge); border-radius:8px; padding:10px; }
+  .ag-report-label { font-size:11px; text-transform:uppercase; letter-spacing:.8px; color:var(--dim); margin:0 0 6px; }
+  .ag-download { display:inline-flex; align-items:center; gap:6px; background:#14532d; color:#bbf7d0; border:1px solid #166534; padding:6px 14px; border-radius:8px; text-decoration:none; font-size:13px; margin-left:8px; }
+  .ag-download:hover { background:#166534; }
+  .log { color:var(--dim); font-size:12px; }
+  .log .kind-ok { color:var(--good); } .log .kind-bad { color:var(--bad); }
+  .ag-control { margin-top:8px; }
 </style>
+<script type="importmap">
+{"imports":{
+  "@earendil-works/pi-agent-core":"./node_modules/@earendil-works/pi-agent-core/dist/index.js",
+  "@earendil-works/pi-ai":"./node_modules/@earendil-works/pi-ai/dist/index.js",
+  "@earendil-works/pi-telemetry":"./node_modules/@earendil-works/pi-telemetry/dist/index.js",
+  "@earendil-works/chord":"./node_modules/@earendil-works/chord/dist/index.js",
+  "@earendil-works/chord/context":"./node_modules/@earendil-works/chord/dist/context/index.js",
+  "typebox":"./node_modules/typebox/build/index.mjs",
+  "typebox/compile":"./node_modules/typebox/build/compile/index.mjs",
+  "typebox/value":"./node_modules/typebox/build/value/index.mjs",
+  "partial-json":"./node_modules/partial-json/esm.js",
+  "@earendil-works/pi-ai/utils/uuid":"./node_modules/@earendil-works/pi-ai/dist/utils/uuid.js",
+  "diff":"./node_modules/diff/libesm/index.js",
+  "ignore":"./node_modules/ignore/legacy-esm.js",
+  "yaml":"./node_modules/yaml/browser-esm.js"
+}}
+</script>
 </head>
 <body>
 <header>
   <h1>PerceptKit</h1>
-  <p>A transformer library compiled to WebAssembly — every model below is generated, trained, and evaluated <b>live in your browser</b>. No pretrained weights, no server. <a href="https://github.com/theabbie/PerceptKit">source</a></p>
+  <p><a href="https://github.com/theabbie/PerceptKit">source</a> · <a href="https://github.com/theabbie/PerceptKit/packages">npm</a> · <a href="#agent">run the agent below</a></p>
 </header>
 <nav>
-  <button data-tab="classify" class="active">Classify · digit classifier</button>
-  <button data-tab="score">Score · text-overlap scorer</button>
-  <button data-tab="generate">Generate · colorizer</button>
+  <button data-tab="classify" class="active">Classify</button>
+  <button data-tab="score">Score</button>
+  <button data-tab="generate">Generate</button>
 </nav>
 <main>
 
-<section id="classify" class="active">
+<!-- Agent section: single-pane goal -> pipeline -> export -->
+<section id="agent" class="active">
+  <div class="panel">
+    <div class="ag-head">
+      <h2 style="margin:0">PerceptKit agent</h2>
+      <span class="badge" id="agPhase">idle</span>
+    </div>
+    <p class="sub">Describe a perception goal in natural text. The agent plans corruptors, writes trainers/probes as an in-browser virtual filesystem, runs them against <code>@theabbie/perceptkit</code>, and exports a downloadable <code>.pkm</code>. Workspace clearing will generate values only; weights are saved locally in your browser.</p>
+    <div class="ag-paste">
+      <textarea id="agGoal" placeholder="e.g. score text overlap on document layouts; or classify noisy digits; or colorize synthetic scenes..." spellcheck="false"></textarea>
+      <button id="agRun" class="primary" type="button">Run</button>
+    </div>
+    <div class="ag-control">
+      <input type="button" id="agAB" class="ghost" value="Abort" onclick="if(window.abortLast) window.abortLast()">
+    </div>
+    <div class="ag-report">
+      <div class="report-pane" id="agLog">
+        <label class="ag-report-label">run log / training losses</label>
+      </div>
+      <div class="review-pane" id="agReview">
+        <label class="ag-report-label">objective & metrics</label>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- keep original demos, restyled (sections unchanged) -->
+<section id="classify" class="">
   <div class="panel">
     <h2>Digit classifier</h2>
-    <p class="sub">Synthetic 8×10 font digits with random shifts and salt noise are generated in your browser; a tiny transformer (2 layers, d=16, ~9k params) is trained with the dense head to output one-hot digits per token. Then draw your own digit below.</p>
+    <p class="sub">Synthetic 8×10 font digits with random shifts and salt noise are generated; a tiny transformer (~9k params) is trained with per-token one-hot outputs. Draw your own digit below after training.</p>
     <button id="clfTrain" class="primary">Train classifier (~45s)</button>
     <div class="bar"><div id="clfBar"></div></div>
     <div class="status" id="clfStatus">Not trained yet.</div>
@@ -82,17 +148,17 @@
   </div>
 </section>
 
-<section id="score">
+<section id="score" class="">
   <div class="panel">
     <h2>Text-overlap scorer</h2>
-    <p class="sub">Documents are rendered as line-art images; the corruption generator shifts one line into another (overlap). Trained by <b>pairwise ranking</b> — mild vs severe corruption of the same base doc — because absolute severity has irreducible label ambiguity (see README). Higher score = cleaner layout.</p>
+    <p class="sub">Documents rendered as line-art; corruption shifts one line into another (overlap). Trained by pairwise ranking — mild vs severe corruption of the same base doc. Higher score = cleaner layout.</p>
     <button id="scTrain" class="primary">Train scorer (~5s)</button>
     <div class="bar"><div id="scBar"></div></div>
     <div class="status" id="scStatus">Not trained yet.</div>
   </div>
   <div class="panel hidden" id="scPlay">
     <h2>Score a document</h2>
-    <p class="sub">Left: the base layout. Right: same layout with one line corrupted at the chosen severity. The scorer must rank the clean one higher.</p>
+    <p class="sub">Left: base layout. Right: corrupted at chosen severity. The scorer must rank the clean one higher.</p>
     <div class="row">
       <div><canvas id="scClean" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">base layout</div><div class="score" id="scCleanScore">—</div></div>
       <div><canvas id="scBad" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">corrupted</div><div class="score" id="scBadScore">—</div></div>
@@ -106,17 +172,17 @@
   </div>
 </section>
 
-<section id="generate">
+<section id="generate" class="">
   <div class="panel">
     <h2>Colorizer</h2>
-    <p class="sub">Synthetic scenes (sky gradient, sun, hills, water) are generated in the browser. The model sees only Rec.601 grayscale, patchified, and the dense head learns to predict the full RGB patch per token — i.e. it must invent color from luminance + context.</p>
+    <p class="sub">Synthetic scenes (sky gradient, sun, hills, water) generated in the browser. Model sees only Rec.601 grayscale; the dense head predicts the full RGB patch per token — i.e. it must invent color from luminance + context.</p>
     <button id="colTrain" class="primary">Train colorizer (~8s)</button>
     <div class="bar"><div id="colBar"></div></div>
     <div class="status" id="colStatus">Not trained yet.</div>
   </div>
   <div class="panel hidden" id="colPlay">
     <h2>Colorize a scene</h2>
-    <p class="sub">Left: what the model sees (grayscale). Middle: model's colorization. Right: ground truth it never saw.</p>
+    <p class="sub">Left: input (grayscale). Middle: model's colorization. Right: ground truth it never saw.</p>
     <div class="row">
       <div><canvas id="colGray" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">input (grayscale)</div></div>
       <div><canvas id="colOut" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">model colorization</div></div>
@@ -128,5 +194,6 @@
 
 </main>
 <script type="module" src="./app.js"></script>
+<script type="module" src="./agent-ui.js"></script>
 </body>
 </html>
