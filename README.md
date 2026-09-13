@@ -145,6 +145,19 @@ severity ordering perfectly (100% accuracy in the e2e test).
   (verified end-to-end rendered in a real browser). Reproducible headlessly:
   `tests/demo-engine.test.js`.
 
+### Install
+
+Published to GitHub Packages (npm registry) as scoped package
+`@theabbie/perceptkit`. In your project's `.npmrc`:
+
+```ini
+@theabbie:registry=https://npm.pkg.github.com
+```
+
+then `npm install @theabbie/perceptkit`. Ships both targets: `pkg/` for
+Node, `pkg-web/` for browser/bundlers (defaults to Node entry).
+(Published with a PAT; the repo's GitHub App lacks package-write.)
+
 ### Try the demos
 
 - **Classify**: synthetic 8×10 font digits, drawn pixel-grid UI, ~94%
