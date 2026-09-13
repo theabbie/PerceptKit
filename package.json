@@ -1,0 +1,32 @@
+{
+  "name": "@theabbie/perceptkit",
+  "version": "0.1.0",
+  "description": "In-browser transformer library (WebAssembly) for self-supervised perception — classify, score, generate. No pretrained weights needed; train where you serve.",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/theabbie/PerceptKit.git"
+  },
+  "main": "pkg/percept_wasm.js",
+  "module": "pkg-web/percept_wasm.js",
+  "types": "pkg/percept_wasm.d.ts",
+  "files": [
+    "pkg/",
+    "pkg-web/",
+    "README.md"
+  ],
+  "keywords": [
+    "wasm",
+    "transformer",
+    "self-supervised",
+    "perception",
+    "browser",
+    "machine-learning"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}
