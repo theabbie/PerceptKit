@@ -1,8 +1,14 @@
-// PerceptKit agent runtime — goal-driven LLM training pipeline.
-// The agent writes corruptors/trainers as in-memory JS code (a VFS) via
-// tools, then a runner dispatches a fixed pipeline against the published
-// wasm lib (@theabbie/perceptkit). Result: downloadable .pkm model weights,
-// live probes, and the score-map/dense-map history.
+// PerceptKit agent runtime — goal-driven in-browser training pipeline.
+//
+// The LLM (via the webiome bridge, no auth) plans the run and writes a
+// corruptor + probe as JS code into a virtual filesystem (browsers have no
+// FS, so this Map is the workspace). The pipeline then does the ML
+// heavy-lifting with the published wasm lib (@theabbie/perceptkit):
+//   corruptor -> training set -> train -> held-out eval -> probes -> .pkm
+//
+// The LLM never runs raw eval'd code with training inside it. It writes
+// small, verifiable functions with a fixed contract, and the pipeline
+// validates them before use. Training itself is the wasm trainer.
 
 import { Agent } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
@@ -10,6 +16,7 @@ import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 const API_ENDPOINT = "https://webiome.abbie.workers.dev/api/stream";
 const MODEL = {
   id: "google/gemini-2.5-flash",
+  name: "Gemini 2.5 Flash through Exa",
   api: "webiome-exa",
   provider: "webiome",
   baseUrl: "",
@@ -21,7 +28,7 @@ const MODEL = {
 };
 
 // ---------------------------------------------------------------------------
-// Virtual filesystem (map<string,string>) — the agent's workspace
+// Virtual filesystem (Map<string,string>) — the agent's workspace
 // ---------------------------------------------------------------------------
 
 export class VFS {
@@ -39,27 +46,193 @@ export class VFS {
   }
 }
 
-// ---------------------------------------------------------------------------
-// VFS prefix strips "module.url" confusion when the LLM emits /tmp/ names
-// ---------------------------------------------------------------------------
-const normalizePath = (p) => p.replace(/^[a-z]+:\/\/?/, "").replace(/^.*?\/?visualengine\//, "").replace(/^\//, "") || p;
+const normalizePath = (p) => {
+  let s = String(p).replace(/^[a-z]+:\/\/?/, "").replace(/^\/+/, "");
+  return s || String(p);
+};
 
 // ---------------------------------------------------------------------------
-// PerceptKitAgent — wraps Agent + tools + VFS, dispatches the run pipeline
+// Pipeline — the ML heavy-lifting. Pure-ish: takes wasm + engine + plan,
+// returns results. No LLM involved here.
+// ---------------------------------------------------------------------------
+
+export async function runPipeline(wasm, engine, plan, ui) {
+  const log = (t) => ui?.log?.(t);
+  const onProgress = (e, epochs, loss) =>
+    ui?.progress?.(e, epochs, loss);
+
+  const kind = plan.training_kind || "dense_mse";
+  const corruptor = plan._corruptor; // compiled fn from the VFS
+  const probe = plan._probe;          // optional compiled probe fn
+  if (!corruptor) return { error: "no corruptor — write corruptor.js first" };
+
+  const r = engine.rng(plan.seed ?? 7);
+
+  if (kind === "score_pair") {
+    // ---------------------------------------------------------------
+    // Pairwise scorer: same base sample, mild vs severe corruption.
+    // Ranking, not absolute regression (irreducible label ambiguity).
+    // ---------------------------------------------------------------
+    const W = plan.img_w ?? engine.DOC_W, H = plan.img_h ?? engine.DOC_H;
+    const PATCH = plan.patch ?? engine.DOC_PATCH;
+    const T = (W / PATCH) * (H / PATCH);
+    const IN = PATCH * PATCH;
+    const nPairs = plan.n_pairs ?? 120;
+    const epochs = plan.epochs ?? 30;
+
+    const base = plan.gen || engine.genDoc;
+    const render = plan.render || engine.renderDoc;
+
+    const betterFlat = new Float32Array(nPairs * T * IN);
+    const worseFlat = new Float32Array(nPairs * T * IN);
+    const seqLens = new Array(nPairs).fill(T);
+    const margins = new Float32Array(nPairs).fill(0.5);
+
+    for (let p = 0; p < nPairs; p++) {
+      const sample = base(r);
+      const mild = corruptor(sample, 0.1 * r(), r);
+      const severe = corruptor(sample, 0.7 + 0.3 * r(), r);
+      betterFlat.set(
+        wasm.patchifyImage(render(mild), W, H, PATCH, 1), p * T * IN);
+      worseFlat.set(
+        wasm.patchifyImage(render(severe), W, H, PATCH, 1), p * T * IN);
+    }
+    log(`data: ${nPairs} pairs (mild vs severe), ${T} tokens/seq`);
+
+    const model = new wasm.PerceptModelWasm(IN, 16, 2, 2, 32, 1, T, plan.seed ?? 7);
+    const trainer = new wasm.TrainerWasm(3e-3, 16, plan.seed ?? 7);
+
+    let last = null;
+    for (let e = 0; e < epochs; e++) {
+      last = trainer.trainPairEpoch(model, betterFlat, worseFlat, seqLens, margins);
+      onProgress?.(e, epochs, last);
+      await new Promise((res) => setTimeout(res, 0));
+    }
+    const acc = trainer.evalPairAccuracy(model, betterFlat, worseFlat, seqLens);
+    log(`train: final pair loss ${last.toFixed(4)}, train acc ${(acc * 100).toFixed(1)}%`);
+
+    // held-out: fresh seed, clean must score above corrupted
+    const r2 = engine.rng((plan.seed ?? 7) + 1000);
+    let heldOk = 0, heldN = 0;
+    for (let p = 0; p < 40; p++) {
+      const sample = base(r2);
+      const clean = wasm.patchifyImage(render(sample), W, H, PATCH, 1);
+      const bad = wasm.patchifyImage(render(corruptor(sample, 0.8, r2)), W, H, PATCH, 1);
+      heldN++;
+      if (model.score(clean, T) > model.score(bad, T)) heldOk++;
+    }
+    const heldAcc = heldOk / heldN;
+    log(`held-out: clean > corrupted on ${(heldAcc * 100).toFixed(1)}% of 40 fresh docs`);
+
+    let probeOut = null;
+    if (probe) {
+      try { probeOut = probe({ model, wasm, engine, rng: r2 }); log("probe: ok"); }
+      catch (err) { log("probe error: " + String(err).slice(0, 120)); }
+    }
+    return {
+      ok: true, kind, model, metrics: [
+        { label: "train pair loss", value: last.toFixed(4) },
+        { label: "train pair acc", value: (acc * 100).toFixed(1) + "%" },
+        { label: "held-out clean>corrupt", value: (heldAcc * 100).toFixed(1) + "%" },
+      ], probe: probeOut,
+    };
+  }
+
+  // ---------------------------------------------------------------
+  // Dense per-token training (classification / generation).
+  // out_channels = C * PATCH^2: the head predicts the full patch.
+  // ---------------------------------------------------------------
+  const W = plan.img_w ?? engine.DIGIT_W, H = plan.img_h ?? engine.DIGIT_H;
+  const PATCH = plan.patch ?? engine.DIGIT_PATCH;
+  const inCh = plan.in_channels ?? 1;
+  const outCh = plan.out_channels ?? (plan.labels ? plan.labels.length : 1);
+  const T = (W / PATCH) * (H / PATCH);
+  const IN = PATCH * PATCH * inCh;
+  const OUT = PATCH * PATCH * outCh;
+  const nPer = plan.n_per_class ?? 60;
+  const epochs = plan.epochs ?? 80;
+
+  const gen = plan.gen || ((r, label) => engine.genDigit(label ?? 0, r));
+  const nLabels = plan.labels?.length || 10;
+
+  // training set: corruptor applied to the generator's output
+  const N = nPer * nLabels;
+  const tokensFlat = new Float32Array(N * T * IN);
+  const targetsFlat = new Float32Array(N * T * OUT);
+  const masksFlat = new Float32Array(N * T).fill(1.0);
+  const samples = [];
+  for (let i = 0; i < N; i++) {
+    const label = i % nLabels;
+    const raw = gen(r, label);
+    const img = corruptor(raw, plan.corrupt_severity ?? 0.15, r, label);
+    tokensFlat.set(wasm.patchifyImage(img, W, H, PATCH, inCh), i * T * IN);
+    samples.push({ img, label });
+    for (let t = 0; t < T; t++) {
+      if (outCh === nLabels) targetsFlat[(i * T + t) * OUT + label] = 1.0;
+    }
+  }
+  log(`data: ${N} samples (${nLabels} classes × ${nPer}), corruptor applied`);
+
+  const model = new wasm.PerceptModelWasm(IN, 16, 2, 2, 32, OUT, T, plan.seed ?? 7);
+  const trainer = new wasm.TrainerWasm(plan.lr ?? 1e-2, 16, plan.seed ?? 7);
+
+  let last = null;
+  for (let e = 0; e < epochs; e++) {
+    last = trainer.trainDenseEpoch(model, tokensFlat, targetsFlat, masksFlat, N, T, "dense_mse");
+    onProgress?.(e, epochs, last);
+    await new Promise((res) => setTimeout(res, 0));
+  }
+  log(`train: final dense loss ${last.toFixed(4)}`);
+
+  // held-out eval with a different seed
+  const r2 = engine.rng((plan.seed ?? 7) + 1000);
+  let correct = 0, heldN = 0;
+  const perClass = new Array(nLabels).fill(0);
+  const perClassTot = new Array(nLabels).fill(0);
+  for (let i = 0; i < 10 * nLabels; i++) {
+    const label = i % nLabels;
+    const raw = gen(r2, label);
+    const img = corruptor(raw, plan.corrupt_severity ?? 0.15, r2, label);
+    const tokens = wasm.patchifyImage(img, W, H, PATCH, inCh);
+    const out = model.transform(tokens, T);
+    const scores = new Array(nLabels).fill(0);
+    for (let t = 0; t < T; t++)
+      for (let c = 0; c < nLabels; c++) scores[c] += out[t * OUT + c];
+    const best = scores.indexOf(Math.max(...scores));
+    heldN++; perClassTot[label]++;
+    if (best === label) { correct++; perClass[label]++; }
+  }
+  const acc = correct / heldN;
+  log(`held-out: ${(acc * 100).toFixed(1)}% (${correct}/${heldN})`);
+  log(`per-class: ` + perClass.map((c, i) => `${i}:${c}/${perClassTot[i]}`).join(" "));
+
+  let probeOut = null;
+  if (probe) {
+    try { probeOut = probe({ model, wasm, engine, rng: r2 }); log("probe: ok"); }
+    catch (err) { log("probe error: " + String(err).slice(0, 120)); }
+  }
+  return {
+    ok: true, kind: "dense_mse", model, metrics: [
+      { label: "final loss", value: last.toFixed(4) },
+      { label: "held-out acc", value: (acc * 100).toFixed(1) + "%" },
+    ], probe: probeOut,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// PerceptKitAgent — Agent + tools + VFS. The LLM plans; the pipeline trains.
 // ---------------------------------------------------------------------------
 
 export class PerceptKitAgent {
   constructor({ pkg, engine, ui }) {
-    // pkg: namespace from @theabbie/perceptkit (loaded as module elsewhere)
-    // engine: namespace from engine.js
-    this.pkg = pkg;
-    this.engine = engine;
+    this.pkg = pkg;       // wasm module namespace (initialized)
+    this.engine = engine; // engine.js namespace
     this.ui = ui;
     this.vfs = new VFS();
-    this.state = { phase: "idle", plan: null, trainLog: [], probes: [] };
+    this.state = { phase: "idle", plan: null, result: null };
     this._tools = this._buildTools();
     this._agent = new Agent(this._buildConfig());
-    this._agent.subscribe((e) => this._onEvent(e));
+    this._agent.subscribe((event) => this._onEvent(event));
   }
 
   _buildConfig() {
@@ -77,47 +250,45 @@ export class PerceptKitAgent {
 
   _systemPrompt() {
     return [
-      "You are the PerceptKit training agent. The user gives you a goal; your",
-      "job is to plan & generate corruptors, train, evaluate and save a model",
-      "using the @theabbie/perceptkit wasm library (already injected as globals",
-      "in the run_js sandbox: percept, engine, core, ci, col, pi).",
+      "You are the PerceptKit training agent. The user gives a perception goal;",
+      "you plan and drive an in-browser training pipeline that ends with a",
+      "reusable, downloadable .pkm model. Be efficient: the whole run must",
+      "finish in a handful of tool calls.",
       "",
-      "Workflow:",
-      "1. plan_label_set: reason out a label set: how many classes, relationship",
-      "   of classes to corruptors, whether dense per-token or global scoring.",
-      "2. write_tool(code, path) to generate corruptor/trainer/eval JS code and",
-      "   store it in the virtual filesystem under scratch/ or models/.",
-      "3. write more trainers, evaluators, probes, and saved-model loaders.",
-      "4. rank_plan(candidates, order) to order your candidate goals into a",
-      "   pipeline (corruptors first, then training, then evaluation, then export).",
-      "5. write_tool('corruptor', ...) — separator-free flat tokens",
-      "6. write_tool('train_score'|'train_dense'|'train_pair', ...) — training entry points",
-      "7. After evaluating with run_eval() or ranking with rank_plan(), use",
-      "   export_model() once satisfied.",
+      "Required workflow (exactly this order):",
+      "1. plan_label_set — commit to: goal, labels, training_kind",
+      "   ('dense_mse' for classification/generation, 'score_pair' for",
+      "   scoring/ranking), corruptor names, and pipeline settings.",
+      "2. write_corruptor — write the corruption function. CONTRACT:",
+      "   function(sample, severity, rng, label) -> corrupted sample of the",
+      "   SAME shape/type as the input. rng() returns uniform [0,1). Keep any",
+      "   coordinates integral. severity in [0,1].",
+      "   Default data generators (pass gen:null to use them):",
+      "   - digits: genDigit-like 8x10 Float32Array images, 10 classes",
+      "   - docs: genDoc returns boxes [[x,y,w,h]...]; renderDoc renders them",
+      "   - scenes: genScene returns 32x32 RGB Float32Array",
+      "   If the goal needs different data, pass a `gen` function in the plan",
+      "   (same call contract: gen(rng, label)).",
+      "3. write_probe (optional but recommended) — function({model, wasm,",
+      "   engine, rng}) -> JSON-serializable probe result for the score card.",
+      "4. run_pipeline — trains for real with the wasm trainer and returns",
+      "   losses, held-out accuracy, and probe output.",
+      "5. export_model — serializes the trained model to .pkm bytes.",
       "",
-      "Data-design lessons (run them every time):",
-      "- If corruption is stochastic, regressing absolute severity creates",
-      "  irreducible label ambiguity — use pairwise ranking instead.",
-      "- Per-token dense targets are the correct formulation for classification",
-      "  and generation tasks; global score is for scoring/ranking only.",
-      "- Always validate corruptor outputs: keep coordinates integral,",
-      "  shuffle positions, probe in-distribution.",
+      "Data-design rules (non-negotiable):",
+      "- If corruption is stochastic, never regress absolute severity —",
+      "  use score_pair (pairwise ranking) instead.",
+      "- Dense per-token targets are for classification/generation; global",
+      "  score is for scoring/ranking only.",
+      "- Keep corruptor outputs the same shape as inputs; validate by",
+      "  construction, not by hoping.",
       "",
-      "Available modules in run_js sandbox:",
-      "  percept = @theabbie/perceptkit public API",
-      "  engine  = PerceptKit docs/engine.js helpers",
-      "  core    = raw helpers (renderDoc, colorize, maskRegion...)",
-      "  ci      = ClassifierInterface (train/eval/gist one-hot dense)",
-      "  col     = Color I/O helpers (toGrayscale, patchify, unpatchify)",
-      "  pi      = Pairwise helpers (pair-batch generation from corruptor)",
-      "",
-      "VFS discipline: keep scratch/<tool>.js and models/<name>.js separate;",
-      "write scratch first; promote only once verified.",
-      "",
-      "The final step is export_model(name) → saves a .pkm file the user can",
-      "download. Then show score/accuracy and probes.",
+      "After export_model succeeds, reply with a 2-3 sentence summary of",
+      "what was trained and the held-out numbers. Do not call more tools.",
     ].join("\n");
   }
+
+  // -- SSE bridge (same protocol as webiome) --------------------------------
 
   _stream(model, context, options) {
     const stream = createAssistantMessageEventStream();
@@ -128,7 +299,6 @@ export class PerceptKitAgent {
   async _forward(stream, model, context, options) {
     let output;
     try {
-      const tools = context.tools || [];
       const res = await fetch(API_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -137,8 +307,8 @@ export class PerceptKitAgent {
           model,
           context: {
             systemPrompt: context.systemPrompt,
-            messages: context.messages,
-            tools: tools.map((t) => ({
+            messages: context.messages || [],
+            tools: (context.tools || []).map((t) => ({
               name: t.name,
               description: t.description,
               parameters: t.parameters,
@@ -146,30 +316,29 @@ export class PerceptKitAgent {
           },
         }),
       });
-      if (!res.ok) {
-        throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      }
+      if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 300)}`);
       if (!res.body) throw new Error("no response body");
       const reader = res.body.getReader();
-      const pending = new TextDecoder();
-      let buf = "";
-      loop: while (true) {
+      const decoder = new TextDecoder();
+      let pending = "";
+      while (true) {
         const { done, value } = await reader.read();
-        buf += pending.decode(value || new Uint8Array(), { stream: !done });
-        const events = buf.split("\n\n");
-        buf = done ? "" : (events.pop() || "");
-        for (const evt of events) {
-          if (!evt.startsWith("data:")) continue;
-          const data = JSON.parse(evt.slice(5).trim());
+        pending += decoder.decode(value || new Uint8Array(), { stream: !done });
+        const events = pending.split("\n\n");
+        pending = done ? "" : (events.pop() || "");
+        for (const event of events) {
+          const line = event.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          const data = JSON.parse(line.slice(5).trim());
           output = data.message || data.error || data.partial || output;
-          stream.push("tool_call" in data ? data : { ...data });
-          if (data.type === "done") break loop;
+          stream.push(data);
         }
+        if (done) break;
       }
       stream.end(output);
     } catch (err) {
       const message = {
-        role: "assistant", content: [], api: "webiome-exa", provider: "webiome",
+        role: "assistant", content: [], api: model.api, provider: model.provider,
         model: model.id,
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
         stopReason: options?.signal?.aborted ? "aborted" : "error",
@@ -181,298 +350,212 @@ export class PerceptKitAgent {
     }
   }
 
+  // -- agent events -> UI log ------------------------------------------------
+
   _onEvent(event) {
-    // placeholder — UI integration done in agent-ui.js
+    const log = (t) => this.ui?.log?.(t);
+    switch (event.type) {
+      case "agent_start":
+        this.state.phase = "plan";
+        break;
+      case "message_end":
+        if (event.message?.role === "assistant") {
+          for (const part of event.message.content || []) {
+            if (part.type === "text" && part.text) log("agent: " + part.text.slice(0, 300));
+          }
+        }
+        break;
+      case "tool_execution_start":
+        log(`tool: ${event.toolName}`);
+        break;
+      case "tool_execution_end":
+        if (event.isError) {
+          log(`tool ${event.toolName} error: ` + JSON.stringify(event.result).slice(0, 200));
+        }
+        break;
+      case "agent_end":
+        this.state.phase = "done";
+        break;
+    }
   }
 
-  // ---------------------------------------------------------------------------
-  // Tools (LLM-callable; path arguments normalized)
-  // ---------------------------------------------------------------------------
+  // -- tools ------------------------------------------------------------------
+
   _buildTools() {
     const self = this;
+
+    // Compile LLM-written function source. Accepts the common forms the
+    // model emits: `function f(...){}`, `function(...){}` (anonymous
+    // expression), `(...) => {...}`, with or without wrapping parens.
+    // Evaluate the source ONCE as an expression to extract the function
+    // itself; fall back to a named-declaration body if that fails.
+    const compileFn = (src) => {
+      const s = String(src).trim().replace(/;+$/, "");
+      // expression form: (source) evaluates to the function value
+      try {
+        const inner = new Function(`"use strict";\nreturn (${s});`)();
+        if (typeof inner === "function") return inner;
+      } catch { /* fall through */ }
+      // declaration form: `function name(...) {...}` as a statement body
+      const m = s.match(/function\s+([A-Za-z_$][\w$]*)\s*\(/);
+      if (m) {
+        const inner = new Function(`"use strict";\n${s}\nreturn ${m[1]};`)();
+        if (typeof inner === "function") return inner;
+      }
+      throw new Error("source did not evaluate to a function — write `function(args){...}` or `(args) => {...}`");
+    };
+
+    // AgentToolResult helper: text back to the model, details for the UI.
+    // Tools THROW on failure (the loop converts that to an error result).
+    const ok = (text, details) => ({
+      content: [{ type: "text", text }],
+      details: details ?? {},
+    });
 
     return [
       {
         name: "plan_label_set",
         label: "Plan label set & objective",
-        description: "From the user's goal: choose a label set, corruptors, masked/dense targets, and the training strategy.",
+        description: "Commit to the training plan: labels, training kind, corruptor names, and pipeline settings. Must be called first.",
         parameters: Type.Object({
           goal: Type.String({ description: "User goal (full text)" }),
-          labels: Type.Array(Type.String(), { description: "Chosen class names / labels" }),
-          training_kind: Type.Optional(Type.String({ description: "'score_pair', 'dense_mse', 'dense_masked'" })),
-          corruptors: Type.Array(Type.String(), { description: "Names of corruptors" }),
+          labels: Type.Array(Type.String(), { description: "Class names (dense_mse) or ['quality'] (score_pair)" }),
+          training_kind: Type.String({ description: "'dense_mse' or 'score_pair'" }),
+          corruptors: Type.Array(Type.String(), { description: "Names of corruptors to write next" }),
+          gen: Type.Optional(Type.String({ description: "Optional data generator function source: function(rng, label) -> sample. Omit to use built-in digits/docs/scenes." })),
+          render: Type.Optional(Type.String({ description: "Optional render function for non-image samples (score_pair): function(sample) -> Float32Array image" })),
+          img_w: Type.Optional(Type.Number()),
+          img_h: Type.Optional(Type.Number()),
+          patch: Type.Optional(Type.Number()),
+          in_channels: Type.Optional(Type.Number()),
+          out_channels: Type.Optional(Type.Number()),
+          n_per_class: Type.Optional(Type.Number({ description: "Samples per class (default 60)" })),
+          n_pairs: Type.Optional(Type.Number({ description: "Pairs for score_pair (default 120)" })),
+          epochs: Type.Optional(Type.Number({ description: "Training epochs (default 80 dense / 30 pair)" })),
+          lr: Type.Optional(Type.Number()),
+          seed: Type.Optional(Type.Number()),
+          corrupt_severity: Type.Optional(Type.Number({ description: "Training corruption severity 0..1 (default 0.15)" })),
           notes: Type.Optional(Type.String()),
         }),
-        execute: async (args) => {
-          self.state.plan = args;
-          self.ui?.log(`plan: ${args.goal} → kind=${args.training_kind || "auto"}, labels=${(args.labels || []).join(",")}, corruptors=${(args.corruptors || []).join(",")}`);
-          return { ok: true, plan: args };
+        execute: async (_toolCallId, args) => {
+          const plan = { ...args };
+          if (args.gen) {
+            try { plan.gen = compileFn(args.gen); }
+            catch (err) { throw new Error("gen compile failed: " + String(err).slice(0, 150)); }
+          }
+          if (args.render) {
+            try { plan.render = compileFn(args.render); }
+            catch (err) { throw new Error("render compile failed: " + String(err).slice(0, 150)); }
+          }
+          self.state.plan = plan;
+          self.ui?.log?.(`plan: kind=${plan.training_kind}, labels=${(plan.labels || []).join(",")}, corruptors=${(plan.corruptors || []).join(",")}`);
+          return ok(`Plan accepted: kind=${plan.training_kind}, labels=${(plan.labels || []).join(",")}, corruptors=${(plan.corruptors || []).join(",")}. Now write the corruptor.`, { plan: { kind: plan.training_kind, labels: plan.labels, corruptors: plan.corruptors } });
         },
       },
       {
-        name: "write_tool",
-        label: "Write/update tool",
-        description: "Write a tool's JS code into the virtual filesystem (scratch/ or models/). Then call run_tool(plan) to try it.",
+        name: "write_corruptor",
+        label: "Write corruptor",
+        description: "Write the corruption function source. Contract: function(sample, severity, rng, label) -> corrupted sample, SAME shape as input. rng() is uniform [0,1). Keep coordinates integral.",
         parameters: Type.Object({
-          path: Type.String({ description: "VFS path, e.g. 'scratch/noise.js' or 'models/digit.js'" }),
-          content: Type.String({ description: "Full JS source (string)" }),
-          description: Type.Optional(Type.String()),
+          name: Type.String({ description: "Corruptor name (from the plan)" }),
+          code: Type.String({ description: "Function source, e.g. 'function(sample, severity, rng, label) { ... return out; }'" }),
         }),
-        execute: async (args) => {
-          self.vfs.write(normalizePath(args.path), args.content);
-          self.ui?.log(`wrote ${normalizePath(args.path)} (${args.content.length} chars)`);
-          return { ok: true, path: normalizePath(args.path), size: args.content.length };
+        execute: async (_toolCallId, args) => {
+          let fn;
+          try { fn = compileFn(args.code); }
+          catch (err) { throw new Error("compile failed: " + String(err).slice(0, 150)); }
+          // smoke test against the plan's generator (or default digits)
+          const r = self.engine.rng(42);
+          const plan = self.state.plan || {};
+          const gen = plan.gen || ((rng2, label) => self.engine.genDigit(label ?? 0, rng2));
+          const sample = gen(r, 0);
+          const out = fn(sample, 0.5, r, 0);
+          const sameShape = out && typeof out === typeof sample &&
+            (ArrayBuffer.isView(sample) ? out.length === sample.length : true);
+          if (!sameShape) {
+            throw new Error(`corruptor returned wrong shape: in ${sample?.length}, out ${out && out.length}`);
+          }
+          self.vfs.write("scratch/corruptor-" + normalizePath(args.name) + ".js", args.code);
+          if (self.state.plan) self.state.plan._corruptor = fn;
+          self.ui?.log?.(`corruptor "${args.name}" written + smoke-tested`);
+          return ok(`Corruptor "${args.name}" compiled and smoke-tested (shape preserved). Now write a probe (optional) and run the pipeline.`, { name: args.name });
         },
       },
       {
-        name: "run_tool",
-        label: "Run tool (REPL)",
-        description: "Execute numbered pipeline steps: corruptors/trainers/evaluators loaded from VFS; use for step-by-step verification before run_pipeline().",
+        name: "write_probe",
+        label: "Write probe",
+        description: "Optional: write a probe function for the score card. Contract: function({model, wasm, engine, rng}) -> JSON-serializable result.",
         parameters: Type.Object({
-          steps: Type.Array(
-            Type.Object({
-              kind: Type.String({ description: "'write','read','edit','delete','exec'" }),
-              path: Type.Optional(Type.String()),
-              code: Type.Optional(Type.String()),
-              from: Type.Optional(Type.String()),
-              to: Type.Optional(Type.String()),
-            })
-          ),
-          collect: Type.Optional(Type.String({ description: "Key to collect from last step (optional)" })),
+          code: Type.String({ description: "Function source" }),
         }),
-        execute: async (args) => self._runSteps(args.steps, args.collect ?? "returnValue"),
+        execute: async (_toolCallId, args) => {
+          let fn;
+          try { fn = compileFn(args.code); }
+          catch (err) { throw new Error("compile failed: " + String(err).slice(0, 150)); }
+          self.vfs.write("scratch/probe.js", args.code);
+          if (self.state.plan) self.state.plan._probe = fn;
+          self.ui?.log?.("probe written");
+          return ok("Probe written. Run the pipeline next.", {});
+        },
       },
       {
         name: "run_pipeline",
-        label: "Run full pipeline",
-        description: "Load all corruptors/trainers/probes from VFS, run: generate pairs/training set → train → evaluate → probes. Returns losses, held-out accuracy, probes, and the .pkm model bytes for export.",
-        parameters: Type.Object({
-          name: Type.String({ description: "Pipeline name (for saved model name)" }),
-        }),
-        execute: async (args) => {
-          const result = await self._runPipeline(args.name);
-          return result;
+        label: "Run training pipeline",
+        description: "Run the real training: corruptor -> dataset -> wasm trainer -> held-out eval -> probe. Requires plan_label_set + write_corruptor first. Returns losses, accuracy, probe output.",
+        parameters: Type.Object({}),
+        execute: async () => {
+          const plan = self.state.plan;
+          if (!plan) throw new Error("no plan — call plan_label_set first");
+          if (!plan._corruptor) throw new Error("no corruptor — call write_corruptor first");
+          const result = await runPipeline(self.pkg, self.engine, plan, {
+            log: (t) => self.ui?.log?.(t),
+            progress: (e, epochs, loss) => self.ui?.progress?.(e, epochs, loss),
+          });
+          self.state.result = result;
+          if (result.error) throw new Error(result.error);
+          const summary = result.metrics.map((m) => `${m.label}: ${m.value}`).join("; ");
+          return ok(
+            `Pipeline done (${result.kind}, ${result.model.nParams()} params). ${summary}` +
+            (result.probe ? ` Probe: ${JSON.stringify(result.probe).slice(0, 200)}` : "") +
+            ". Export the model next.",
+            { metrics: result.metrics, probe: result.probe ?? null, kind: result.kind }
+          );
         },
       },
       {
         name: "export_model",
-        label: "Export saved model",
-        description: "Serialize the final model weights (PKM1) and provide a download link.",
+        label: "Export model",
+        description: "Serialize the trained model to PKM1 bytes. The UI turns this into a download link. Requires run_pipeline to have succeeded.",
         parameters: Type.Object({
-          name: Type.String({ description: "Model name" }),
+          name: Type.String({ description: "Model file name (without .pkm)" }),
         }),
-        execute: async (args) => {
-          const saved = await self._exportModel(args.name);
-          return saved;
-        },
-      },
-      {
-        name: "rank_plan",
-        label: "Plan priority order",
-        description: "Order your candidate pipeline steps (should be ordered corruptors, trainers, evaluators, export).",
-        parameters: Type.Object({
-          ordered_kinds: Type.Array(Type.String()),
-        }),
-        execute: async (args) => {
-          self.state.order = args.ordered_kinds;
-          return { ok: true, order: args.ordered_kinds };
-        },
-      },
-      {
-        name: "run_eval",
-        label: "Run one evaluator",
-        description: "Run a single evaluator on the trained model (held-out check).",
-        parameters: Type.Object({
-          kind: Type.String({ description: "'pair_acc'|'heldout_cls'|'color_mae'|'free_eval'" }),
-          name: Type.String(),
-        }),
-        execute: async (args) => {
-          return await self._runEval(args.kind, args.name);
+        execute: async (_toolCallId, args) => {
+          const result = self.state.result;
+          if (!result?.model) throw new Error("no trained model — run run_pipeline first");
+          const bytes = result.model.save();
+          self.state.export = { name: args.name, bytes };
+          self.ui?.log?.(`export: ${args.name}.pkm (${bytes.length} bytes, ${result.model.nParams()} params)`);
+          return ok(`Exported ${args.name}.pkm: ${bytes.length} bytes, ${result.model.nParams()} params. The download link is in the metrics panel. Finish with a short summary.`, { name: args.name, size: bytes.length });
         },
       },
       {
         name: "list_vfs",
-        label: "Workspace tree & tools",
-        description: "List current virtual files (with sizes) and the available tool kinds used by run_tool steps.",
+        label: "List workspace",
+        description: "List the virtual filesystem (agent-written code) and current plan state.",
         parameters: Type.Object({}),
-        execute: async (args) => {
-          const entries = self.vfs.snapshot();
-          const kinds = [
-            { kind: "compile", description: "generate code for a corruptor/trainer/eval" },
-            { kind: "pair", description: "generate pairwise batch (corruptLo vs corruptHi)" },
-            { kind: "ci", description: "generate a classification batch (one-hot dense)" },
-            { kind: "col", description: "generate colorization batch (gray->rgb)" },
-            { kind: "score", description: "global score batch" },
-            { kind: "pipeline", description: "run the whole pipeline (if set up)" },
-          ];
-          return { files: entries, kinds };
-        },
-      },
-      {
-        name: "get_model_history",
-        label: "Training history & score-card",
-        description: "Losses/accuracy/probes from run_pipeline() — for score-card display.",
-        parameters: Type.Object({}),
-        execute: async () => {
-          const h = self.state.trainLog;
-          return { log: h.slice(-30), probes: self.state.probes };
-        },
-      },
-      {
-        name: "reporter",
-        label: "Update reporter",
-        description: "Emit progress report/burn: plan, phase, losses, held-out, probes, download link. Called once after pipeline finish.",
-        parameters: Type.Object({
-          phase: Type.String({ description: "'plan'|'train'|'eval'|'export'|'done'" }),
-          summary: Type.Optional(Type.String()),
-        }),
-        execute: async (args) => {
-          self.state.phase = args.phase;
-          return { ok: true, phase: self.state.phase, summary: args.summary };
-        },
-      },
-      {
-        name: "edit_tool",
-        label: "Edit/patch tool",
-        description: "Apply small fixes to existing VFS code using string-prefix matching (e.g. fix a bad shift, adjust lr).",
-        parameters: Type.Object({
-          path: Type.String(),
-          find: Type.String(),
-          replace: Type.Optional(Type.String()),
-          set_content: Type.Optional(Type.String({ description: "Replace whole file if no find match" })),
-        }),
-        execute: async (args) => {
-          const p = normalizePath(args.path);
-          const existing = self.vfs.read(p) || "";
-          let next;
-          if (args.set_content) {
-            next = args.set_content;
-          } else if (args.find) {
-            const i = existing.indexOf(args.find);
-            if (i < 0) {
-              // fallback: append a comment prefix + content
-              next = args.replace ? existing.replace(args.find, args.replace) : existing + "\n// appended:\n" + (args.replace ?? "");
-            } else {
-              next = existing.replace(args.find, args.replace ?? "");
-            }
-          } else {
-            next = existing;
-          }
-          self.vfs.write(p, next);
-          return { ok: true, path: p, size: next.length };
-        },
+        execute: async () => ok(JSON.stringify({
+          files: self.vfs.snapshot(),
+          plan: self.state.plan
+            ? { kind: self.state.plan.training_kind, labels: self.state.plan.labels, corruptors: self.state.plan.corruptors }
+            : null,
+          trained: !!self.state.result?.model,
+        }), {}),
       },
     ];
   }
 
-  // ---------------------------------------------------------------------------
-  // Structured run_tool implementation — avoids eval / index-resolution bugs
-  // ---------------------------------------------------------------------------
-  async _runSteps(steps, collect) {
-    let last;
-    for (const step of steps) {
-      if (step.kind === "write") {
-        this.vfs.write(normalizePath(step.path), step.code); last = { ok: true };
-      } else if (step.kind === "read") {
-        let data = this.vfs.read(normalizePath(step.path));
-        last = { ok: true, data: data ?? null, size: (data || "").length };
-      } else if (step.kind === "delete") {
-        this.vfs.del(normalizePath(step.path)); last = { ok: true };
-      } else if (step.kind === "edit") {
-        const p = normalizePath(step.path);
-        const src = this.vfs.read(p) || "";
-        let next = src;
-        if (step.from) {
-          const i = src.indexOf(step.from);
-          if (i >= 0 && step.to !== undefined) next = src.replace(step.from, step.to);
-        }
-        this.vfs.write(p, next); last = { ok: true, edited: next.length !== src.length };
-      } else if (step.kind === "exec") {
-        const src = step.code ?? this.vfs.read(normalizePath(step.path)) ?? "";
-        const sandbox = this._codeSandbox();
-        const fn = new Function("sandbox", "agent", "pkg", "engine", "vfs_read", "vfs_write", "return (" + src + ")");
-        // ensure src evaluates to an expression for return; wrap as needed by
-        // the caller's promised shape (we don't let it throw unwinding)
-        try {
-          last = await fn(sandbox, this, this.pkg, this.engine, this.vfs.read.bind(this.vfs), this.vfs.write.bind(this.vfs));
-        } catch (err) {
-          last = { error: String(err), stack: err.stack?.slice(0, 300) };
-        }
-      } else {
-        last = { error: "unknown step kind: " + step.kind };
-      }
-    }
-    const output = collect ? (collect === "returnValue" ? last : { [collect]: last }) : {};
-    return { ok: !last?.error, result: last, collected: output };
-  }
+  // -- public API ---------------------------------------------------------------
 
-  _codeSandbox() {
-    // Expose modules & a watchdog set — pg.get().fs() etc.
-    return {
-      percept: this.pkg,
-      engine: this.engine,
-      core: { renderDoc: this.engine.renderDoc, corruptDoc: this.engine.corruptDoc, maskRegion: this.engine.maskRegion, toGrayscale: this.pkg.toGrayscale, colorize: this.engine.colorize },
-      ci: { classify: (binary, model) => binary.length % model.nParams() },
-      col: { tonight: () => "unused" },
-      pi: { trainPairPseudo: () => "unused" },
-      VFS: () => this.vfs.snapshot(),
-      files: { save: (name, value, type) => ({ name, value, type }) },
-    };
-  }
-
-  // ---------------------------------------------------------------------------
-  // Pipeline — generated checkpoints were written to VFS by the agent
-  // ---------------------------------------------------------------------------
-  async _runPipeline(name) {
-    this.ui?.log("pipeline: " + name + " starting");
-    // Load module code from VFS: scratch/<tool>.js entries
-    const seg = this.vfs.list().filter((p) => p.startsWith("scratch/") || p.startsWith("models/"));
-    if (!seg.length) return { error: "no tools in VFS — write_tool first" };
-
-    // Simplified compiled pipeline: distinct corruptor/dense/score probes.
-    // The agent's tools are loaded, evaluated sequentially, and a small
-    // trainer is autowired over synthesized examples.
-    try {
-      let state = { losses: [], probes: [], trainAcc: null, heldAcc: null };
-      const execSrc = (src) => {
-        const fn = new Function("sandbox", "agent", "pkg", "engine", "vfs_read", "vfs_write", "return (" + src + ")");
-        return fn(this._codeSandbox(), this, this.pkg, this.engine, this.vfs.read.bind(this.vfs), this.vfs.write.bind(this.vfs));
-      };
-      for (const path of seg) {
-        const src = this.vfs.read(path);
-        const fn = new Function("sandbox", "agent", "pkg", "engine", "vfs_read", "vfs_write", "return (" + src + ")");
-        const out = fn(this._codeSandbox(), this, this.pkg, this.engine, this.vfs.read.bind(this.vfs), this.vfs.write.bind(this.vfs));
-        state.losses.push({ path, ok: !(out && out.error) });
-        if (out && out.error) state.losses.push({ path, error: String(out.error).slice(0, 100) });
-      }
-      this.state.trainLog = state.losses;
-      this.ui?.log(`pipeline: ran ${state.losses.length} tools`);
-      return { ok: true, name, log: this.state.trainLog };
-    } catch (err) {
-      this.state.trainLog.push({ error: String(err) });
-      return { ok: false, error: String(err) };
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // evaluators — held-out checks on the trained model
-  // ---------------------------------------------------------------------------
-  async _runEval(kind, name) {
-    const fn = new Function("sandbox", "agent", "pkg", "engine", "return ({ kind })", );
-    return { ok: true, kind, name, note: "evaluator interface bound" };
-  }
-
-  // ---------------------------------------------------------------------------
-  // Export a model (PKM1) — creates a downloadable blob link for the user.
-  // ---------------------------------------------------------------------------
-  async _exportModel(name) {
-    // note: wasm's save() returns Uint8Array; model=pk is kept after training
-    return { ok: true, model_name: name, note: "export to Download link is wired by the UI" };
-  }
-
-  // ---------------------------------------------------------------------------
-  // Public API
-  // ---------------------------------------------------------------------------
   async prompt(text) {
     await this._agent.prompt(text);
   }
@@ -480,10 +563,13 @@ export class PerceptKitAgent {
   snapshot() {
     return {
       phase: this.state.phase,
-      plan: this.state.plan,
+      plan: this.state.plan && {
+        goal: this.state.plan.goal, kind: this.state.plan.training_kind,
+        labels: this.state.plan.labels, corruptors: this.state.plan.corruptors,
+      },
       files: this.vfs.snapshot(),
-      messages: this._agent.state.messages.length,
-      streaming: this._agent.state.isStreaming,
+      trained: !!this.state.result?.model,
+      export: this.state.export && { name: this.state.export.name, size: this.state.export.bytes.length },
     };
   }
 }
