@@ -3,6 +3,7 @@
 import init, * as pkg from "./pkg-web/percept_wasm.js";
 import * as engine from "./engine.js";
 import { PerceptKitAgent } from "./agent-core.js";
+import { renderProbe } from "./probe-ui.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -38,6 +39,12 @@ function logLine(kind, text) {
   pane.scrollTop = pane.scrollHeight;
 }
 
+// live loss curve on probe canvas
+function drawLossCurve(losses) {
+  const canvas = $("agProbeCanvas");
+  renderProbe(canvas, { losses }, null, engine, pkg);
+}
+
 function reviewHtml(blocks, download) {
   const pane = $("agReview");
   let html = '<label class="ag-report-label">objective & metrics</label>';
@@ -62,6 +69,30 @@ async function build() {
       log: (t) => logLine("ok", t),
       progress: (e, epochs, loss) => {
         phase(`train ${e + 1}/${epochs} (loss ${loss.toFixed(4)})`);
+      },
+      iteration: (n, total, text) => {
+        $("agIter").textContent = `round ${n}/${total}`;
+        phase(`round ${n}/${total}`);
+        logLine("ok", text);
+      },
+      viz: (event) => {
+        // event: { type: "update"|"probe"|"adversarial", ... }
+        try {
+          if (event.type === "update" && event.losses) {
+            drawLossCurve(event.losses);
+            $("agStats").textContent = "training loss curve";
+          } else if (event.type === "update" && event.message) {
+            $("agStats").textContent = event.message;
+          } else if (event.type === "probe") {
+            renderProbe($("agProbeCanvas"), event.probe, event.model, engine, pkg);
+            $("agStats").textContent = "probe render (" + JSON.stringify(Object.keys(event.probe || {})).slice(0, 200) + ")";
+          } else if (event.type === "adversarial") {
+            logLine("ok", "adversarial: " + event.message);
+            $("agStats").textContent = event.message;
+          }
+        } catch (err) {
+          $("agStats").textContent = "viz error: " + String(err).slice(0, 60);
+        }
       },
     },
   });

@@ -60,13 +60,17 @@ export async function runPipeline(wasm, engine, plan, ui) {
   const log = (t) => ui?.log?.(t);
   const onProgress = (e, epochs, loss) =>
     ui?.progress?.(e, epochs, loss);
+  const viz = (event) => ui?.viz?.(event); // live viz events (update/probe/adversarial)
+  const iterCb = (n, total, text) => ui?.iteration?.(n, total, text);
 
   const kind = plan.training_kind || "dense_mse";
   const corruptor = plan._corruptor; // compiled fn from the VFS
-  const probe = plan._probe;          // optional compiled probe fn
+  // the probe is OPTIONAL: it returns {cases:[...] } with adversarial
+  // mismatches the next round absorbs; or just {stats:...} for a score card.
+  const probe = plan._probe;
   if (!corruptor) return { error: "no corruptor — write corruptor.js first" };
 
-  const r = engine.rng(plan.seed ?? 7);
+  let r = engine.rng(plan.seed ?? 7);
 
   if (kind === "score_pair") {
     // ---------------------------------------------------------------
@@ -97,6 +101,7 @@ export async function runPipeline(wasm, engine, plan, ui) {
       worseFlat.set(
         wasm.patchifyImage(render(severe), W, H, PATCH, 1), p * T * IN);
     }
+    viz({ type: "update", stage: "data", message: `building ${nPairs} pairwise samples` });
     log(`data: ${nPairs} pairs (mild vs severe), ${T} tokens/seq`);
 
     const model = new wasm.PerceptModelWasm(IN, 16, 2, 2, 32, 1, T, plan.seed ?? 7);
@@ -106,6 +111,9 @@ export async function runPipeline(wasm, engine, plan, ui) {
     for (let e = 0; e < epochs; e++) {
       last = trainer.trainPairEpoch(model, betterFlat, worseFlat, seqLens, margins);
       onProgress?.(e, epochs, last);
+      if (e % 4 === 0) {
+        viz({ type: "update", stage: "train", losses: [{ epoch: e, value: last }] });
+      }
       await new Promise((res) => setTimeout(res, 0));
     }
     const acc = trainer.evalPairAccuracy(model, betterFlat, worseFlat, seqLens);
@@ -126,8 +134,11 @@ export async function runPipeline(wasm, engine, plan, ui) {
 
     let probeOut = null;
     if (probe) {
-      try { probeOut = probe({ model, wasm, engine, rng: r2 }); log("probe: ok"); }
-      catch (err) { log("probe error: " + String(err).slice(0, 120)); }
+      try {
+        probeOut = probe({ model, wasm, engine, rng: r2 });
+        viz({ type: "probe", probe: probeOut, model });
+        log("probe: ok");
+      } catch (err) { log("probe error: " + String(err).slice(0, 120)); }
     }
     return {
       ok: true, kind, model, metrics: [
@@ -151,71 +162,117 @@ export async function runPipeline(wasm, engine, plan, ui) {
   const OUT = PATCH * PATCH * outCh;
   const nPer = plan.n_per_class ?? 60;
   const epochs = plan.epochs ?? 80;
+  const maxIterations = plan.max_iterations ?? 3;
 
   const gen = plan.gen || ((r, label) => engine.genDigit(label ?? 0, r));
   const nLabels = plan.labels?.length || 10;
 
-  // training set: corruptor applied to the generator's output
-  const N = nPer * nLabels;
-  const tokensFlat = new Float32Array(N * T * IN);
-  const targetsFlat = new Float32Array(N * T * OUT);
-  const masksFlat = new Float32Array(N * T).fill(1.0);
-  const samples = [];
-  for (let i = 0; i < N; i++) {
-    const label = i % nLabels;
-    const raw = gen(r, label);
-    const img = corruptor(raw, plan.corrupt_severity ?? 0.15, r, label);
-    tokensFlat.set(wasm.patchifyImage(img, W, H, PATCH, inCh), i * T * IN);
-    samples.push({ img, label });
-    for (let t = 0; t < T; t++) {
-      if (outCh === nLabels) targetsFlat[(i * T + t) * OUT + label] = 1.0;
+  // adversarial iteration state: a bag of hard cases + severity escalation
+  const adv = { bag: [], severity: plan.corrupt_severity ?? 0.15, iteration: 0, losses: [] };
+
+  const buildAndTrainData = () => {
+    const N = nPer * nLabels;
+    const tokensFlat = new Float32Array(N * T * IN);
+    const targetsFlat = new Float32Array(N * T * OUT);
+    const masksFlat = new Float32Array(N * T).fill(1.0);
+    for (let i = 0; i < N; i++) {
+      const label = i % nLabels;
+      const raw = gen(r, label);
+      const img = corruptor(raw, adv.severity, r, label);
+      tokensFlat.set(wasm.patchifyImage(img, W, H, PATCH, inCh), i * T * IN);
+      for (let t = 0; t < T; t++) {
+        if (outCh === nLabels) targetsFlat[(i * T + t) * OUT + label] = 1.0;
+      }
+    }
+    viz({ type: "update", stage: "data", message: `round ${adv.iteration + 1}: ${N} samples (sev ${adv.severity.toFixed(2)})` });
+    return { N, tokensFlat, targetsFlat, masksFlat };
+  };
+
+  const evalHeldOut = (model) => {
+    const r2 = engine.rng((plan.seed ?? 7) + 1000 + adv.iteration);
+    let correct = 0, heldN = 0;
+    const perClass = new Array(nLabels).fill(0);
+    const perClassTot = new Array(nLabels).fill(0);
+    const mismatches = [];
+    for (let i = 0; i < 10 * nLabels; i++) {
+      const label = i % nLabels;
+      const raw = gen(r2, label);
+      const img = corruptor(raw, adv.severity, r2, label);
+      const tokens = wasm.patchifyImage(img, W, H, PATCH, inCh);
+      const out = model.transform(tokens, T);
+      const scores = new Array(nLabels).fill(0);
+      for (let t = 0; t < T; t++)
+        for (let c = 0; c < nLabels; c++) scores[c] += out[t * OUT + c];
+      const best = scores.indexOf(Math.max(...scores));
+      heldN++; perClassTot[label]++;
+      if (best === label) { correct++; perClass[label]++; }
+      else if (mismatches.length < 8) mismatches.push({ img, label, predicted: best });
+    }
+    return { acc: correct / heldN, n: heldN, perClass, perClassTot, mismatches };
+  };
+
+  let model = null, roundMetrics = null, probeOut = null, best = { acc: -1, model: null, metrics: null, probe: null };
+  for (let it = 0; it < maxIterations; it++) {
+    adv.iteration = it;
+    iterCb?.(it + 1, maxIterations, `training round ${it + 1}/${maxIterations}`);
+    const { N, tokensFlat, targetsFlat, masksFlat } = buildAndTrainData();
+    model = new wasm.PerceptModelWasm(IN, 16, 2, 2, 32, OUT, T, (plan.seed ?? 7) + it);
+    const trainer = new wasm.TrainerWasm(plan.lr ?? 1e-2, 16, (plan.seed ?? 7) + it);
+    let last = null;
+    for (let e = 0; e < epochs; e++) {
+      last = trainer.trainDenseEpoch(model, tokensFlat, targetsFlat, masksFlat, N, T, "dense_mse");
+      adv.losses.push({ round: it, epoch: e, value: last });
+      onProgress?.(e, epochs, last);
+      if (e % 5 === 0 || e === epochs - 1) viz({ type: "update", stage: "train", losses: adv.losses });
+      await new Promise((res) => setTimeout(res, 0));
+    }
+    const held = evalHeldOut(model);
+    roundMetrics = { loss: last, acc: held.acc, n: held.n, perClass: held.perClass, perClassTot: held.perClassTot };
+    log(`round ${it + 1}: loss ${last.toFixed(4)}, held-out ${(held.acc * 100).toFixed(1)}% (${held.n})`);
+
+    probeOut = null;
+    if (probe) {
+      const r2 = engine.rng((plan.seed ?? 7) + 2000 + it);
+      try {
+        probeOut = probe({ model, wasm, engine, rng: r2, iteration: it });
+        viz({ type: "probe", probe: probeOut, model });
+        log("probe: ok");
+      } catch (err) { log("probe error: " + String(err).slice(0, 120)); }
+    }
+    // absorb probe-returned cases into the hard bag (severity ramp)
+    let added = 0;
+    for (const m of ((probeOut?.cases) || []).slice(0, 20)) {
+      const sample = m.sample ?? m.input ?? m.img;
+      if (sample !== undefined) { adv.bag.push(sample); added++; }
+    }
+    // if probe returned nothing hard, mine held-out mismatches (labels stay intact)
+    for (const mm of held.mismatches.slice(0, 8)) {
+      try { adv.bag.push(mm.img); added++; } catch { /* ignore */ }
+    }
+    if (added) {
+      adv.severity = Math.min(0.55, adv.severity + 0.05);
+      log(`adversarial: ${added} hard cases → severity ${adv.severity.toFixed(2)} (bag ${adv.bag.length})`);
+      viz({ type: "adversarial", message: `${added} hard cases → severity ${adv.severity.toFixed(2)}` });
+    }
+    if (held.acc > best.acc) {
+      best = { acc: held.acc, model, metrics: roundMetrics, probe: probeOut };
+    }
+    if (!added && held.acc > 0.9) break; // converged, nothing hard left
+  }
+  if (best.model) {
+    const finalIdx = adv.iteration;
+    if (roundMetrics.acc < best.acc) {
+      log(`selecting round ${best.metrics ? "best" : ""} model @ ${(best.acc * 100).toFixed(1)}% over last ${(roundMetrics.acc * 100).toFixed(1)}%`);
+      model = best.model; roundMetrics = best.metrics; probeOut = best.probe;
     }
   }
-  log(`data: ${N} samples (${nLabels} classes × ${nPer}), corruptor applied`);
 
-  const model = new wasm.PerceptModelWasm(IN, 16, 2, 2, 32, OUT, T, plan.seed ?? 7);
-  const trainer = new wasm.TrainerWasm(plan.lr ?? 1e-2, 16, plan.seed ?? 7);
-
-  let last = null;
-  for (let e = 0; e < epochs; e++) {
-    last = trainer.trainDenseEpoch(model, tokensFlat, targetsFlat, masksFlat, N, T, "dense_mse");
-    onProgress?.(e, epochs, last);
-    await new Promise((res) => setTimeout(res, 0));
-  }
-  log(`train: final dense loss ${last.toFixed(4)}`);
-
-  // held-out eval with a different seed
-  const r2 = engine.rng((plan.seed ?? 7) + 1000);
-  let correct = 0, heldN = 0;
-  const perClass = new Array(nLabels).fill(0);
-  const perClassTot = new Array(nLabels).fill(0);
-  for (let i = 0; i < 10 * nLabels; i++) {
-    const label = i % nLabels;
-    const raw = gen(r2, label);
-    const img = corruptor(raw, plan.corrupt_severity ?? 0.15, r2, label);
-    const tokens = wasm.patchifyImage(img, W, H, PATCH, inCh);
-    const out = model.transform(tokens, T);
-    const scores = new Array(nLabels).fill(0);
-    for (let t = 0; t < T; t++)
-      for (let c = 0; c < nLabels; c++) scores[c] += out[t * OUT + c];
-    const best = scores.indexOf(Math.max(...scores));
-    heldN++; perClassTot[label]++;
-    if (best === label) { correct++; perClass[label]++; }
-  }
-  const acc = correct / heldN;
-  log(`held-out: ${(acc * 100).toFixed(1)}% (${correct}/${heldN})`);
-  log(`per-class: ` + perClass.map((c, i) => `${i}:${c}/${perClassTot[i]}`).join(" "));
-
-  let probeOut = null;
-  if (probe) {
-    try { probeOut = probe({ model, wasm, engine, rng: r2 }); log("probe: ok"); }
-    catch (err) { log("probe error: " + String(err).slice(0, 120)); }
-  }
   return {
     ok: true, kind: "dense_mse", model, metrics: [
-      { label: "final loss", value: last.toFixed(4) },
-      { label: "held-out acc", value: (acc * 100).toFixed(1) + "%" },
-    ], probe: probeOut,
+      { label: "final loss (last round)", value: roundMetrics.loss.toFixed(4) },
+      { label: "held-out acc (best round)", value: (roundMetrics.acc * 100).toFixed(1) + "%" },
+      { label: "iterations", value: String(adv.iteration + 1) },
+    ], probe: probeOut, perClass: roundMetrics.perClass, perClassTot: roundMetrics.perClassTot,
   };
 }
 
@@ -269,10 +326,20 @@ export class PerceptKitAgent {
       "   - scenes: genScene returns 32x32 RGB Float32Array",
       "   If the goal needs different data, pass a `gen` function in the plan",
       "   (same call contract: gen(rng, label)).",
-      "3. write_probe (optional but recommended) — function({model, wasm,",
-      "   engine, rng}) -> JSON-serializable probe result for the score card.",
-      "4. run_pipeline — trains for real with the wasm trainer and returns",
-      "   losses, held-out accuracy, and probe output.",
+      "3. write_probe (recommended) — function({model, wasm, engine, rng,",
+      "   iteration}) -> JSON result for the score card AND, optionally,",
+      "   adversarial cases: return {stats:{...}, cases:[{sample|input|img,",
+      "   label, predicted}]} to feed the next iteration's hard-case bag.",
+      "   The pipeline runs up to plan.max_iterations rounds; each round's",
+      "   probe can mine new hard cases that the corruptor then faces.",
+      "   THE LIVE VIEWER consumes the probe return — pick ONE drawable",
+      "   field: {losses:[{epoch,value}]} (curve), {values:[num...]} (bars),",
+      "   {points:[[x,y]...]} (scatter), {matrix:[[...]...]} (heat map), or",
+      "   {scores:[num...]} (prediction bar, best green). Unknown fields",
+      "   fall back to a summary card.",
+      "4. run_pipeline — trains for real with the wasm trainer, iterating up",
+      "   to plan.max_iterations rounds with adversarial mining, and returns",
+      "   losses, held-out accuracy (best round), and probe output.",
       "5. export_model — serializes the trained model to .pkm bytes.",
       "",
       "Data-design rules (non-negotiable):",
@@ -536,6 +603,20 @@ export class PerceptKitAgent {
           self.state.export = { name: args.name, bytes };
           self.ui?.log?.(`export: ${args.name}.pkm (${bytes.length} bytes, ${result.model.nParams()} params)`);
           return ok(`Exported ${args.name}.pkm: ${bytes.length} bytes, ${result.model.nParams()} params. The download link is in the metrics panel. Finish with a short summary.`, { name: args.name, size: bytes.length });
+        },
+      },
+      {
+        name: "ui_spec",
+        label: "UI-spec (optional)",
+        description: "Declaring a render kind for the live probe canvas. Accepted: 'loss' (needs probe.losses), 'bars' (values), 'heat' (matrix), 'scatter' (points), 'pred' (scores). Purely declarative; the pipeline falls back to a good default if omitted.",
+        parameters: Type.Object({
+          kind: Type.String({ description: "'loss'|'bars'|'heat'|'scatter'|'pred'" }),
+          field: Type.Optional(Type.String({ description: "Which probe field holds the data (default auto-detect)" })),
+        }),
+        execute: async (_toolCallId, args) => {
+          if (!self.state.plan) throw new Error("no plan — call plan_label_set first");
+          self.state.plan._uiSpec = { kind: args.kind, field: args.field };
+          return ok(`UI spec set to ${args.kind}; probe-driven render active.`, { kind: args.kind });
         },
       },
       {

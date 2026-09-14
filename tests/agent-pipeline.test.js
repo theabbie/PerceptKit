@@ -84,7 +84,7 @@ async function main() {
   console.log("  logs:", logs.join(" | "));
   assert.ok(res1.ok, "dense pipeline failed: " + JSON.stringify(res1).slice(0, 200));
   assert.ok(res1.model, "no model returned");
-  const acc1 = parseFloat(res1.metrics.find((m) => m.label === "held-out acc").value);
+  const acc1 = parseFloat(res1.metrics.find((m) => m.label === "held-out acc (best round)").value);
   console.log(`  done in ${Date.now() - t0}ms, held-out acc ${acc1}%`);
   assert.ok(acc1 > 60, `dense held-out accuracy too low: ${acc1}`);
 
