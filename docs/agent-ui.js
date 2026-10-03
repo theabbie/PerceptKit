@@ -1,19 +1,20 @@
-// PerceptKit agent UI — binds the agent panel to PerceptKitAgent.
-// The LLM plans via tools; runPipeline (agent-core) does the ML heavy-lifting.
-import init, * as pkg from "./pkg-web/percept_wasm.js";
-import * as engine from "./engine.js";
-import { PerceptKitAgent } from "./agent-core.js";
-import { renderProbe } from "./probe-ui.js";
+
+
+import init, * as pkg from "./pkg-web/percept_wasm.js?v=0.6";
+import * as engine from "./engine.js?v=0.6";
+import { PerceptKitAgent } from "./agent-core.js?v=0.6";
+import { renderProbe } from "./probe-ui.js?v=0.6";
+import { mountDemo } from "./demo-ui.js?v=0.6";
 
 const $ = (id) => document.getElementById(id);
 
-// ---------------------------------------------------------------------------
-// state
-// ---------------------------------------------------------------------------
-let agent = null;
-let currentRun = null; // { controller } for abort
 
-// collect uncaught errors so silent failures surface in the log pane
+
+
+let agent = null;
+let currentRun = null; 
+
+
 window.__errors = [];
 window.addEventListener("error", (e) => {
   window.__errors.push(String(e.message));
@@ -24,9 +25,9 @@ window.addEventListener("unhandledrejection", (e) => {
   logLine("bad", "unhandled rejection: " + String(e.reason).slice(0, 200));
 });
 
-// ---------------------------------------------------------------------------
-// log / review panes
-// ---------------------------------------------------------------------------
+
+
+
 function phase(name) { $("agPhase").textContent = name; }
 
 function logLine(kind, text) {
@@ -39,7 +40,7 @@ function logLine(kind, text) {
   pane.scrollTop = pane.scrollHeight;
 }
 
-// live loss curve on probe canvas
+
 function drawLossCurve(losses) {
   const canvas = $("agProbeCanvas");
   renderProbe(canvas, { losses }, null, engine, pkg);
@@ -57,12 +58,12 @@ function reviewHtml(blocks, download) {
   pane.innerHTML = html;
 }
 
-// ---------------------------------------------------------------------------
-// agent lifecycle
-// ---------------------------------------------------------------------------
+
+
+
 async function build() {
   if (agent) return agent;
-  await init(); // idempotent; app.js also calls it
+  await init(); 
   agent = new PerceptKitAgent({
     pkg, engine,
     ui: {
@@ -76,7 +77,7 @@ async function build() {
         logLine("ok", text);
       },
       viz: (event) => {
-        // event: { type: "update"|"probe"|"adversarial", ... }
+        
         try {
           if (event.type === "update" && event.losses) {
             drawLossCurve(event.losses);
@@ -96,32 +97,50 @@ async function build() {
       },
     },
   });
-  window.__agent = agent; // debugging handle
+  window.__agent = agent; 
   window.abortLast = () => agent?.abort();
   return agent;
 }
 
-// ---------------------------------------------------------------------------
-// run handler
-// ---------------------------------------------------------------------------
+
+
+
+let demoHandle = null;
+
+function tryMountDemo(model, demoSpec) {
+  const pane = $("agDemo");
+  if (!pane || !model || !demoSpec) return;
+  try {
+    demoHandle = mountDemo({
+      container: pane, model, wasm: pkg, spec: demoSpec, engine,
+    });
+    window.__demo = demoHandle;
+  } catch (err) {
+    logLine("bad", "demo mount failed: " + String(err).slice(0, 120));
+  }
+}
+
 async function onRun() {
   const goal = $("agGoal").value.trim();
   if (!goal) { logLine("bad", "empty goal — describe your perception task"); return; }
 
+  $("agDemo").style.display = "none";
+  $("agDemo").innerHTML = "";
+  demoHandle = null;
   $("agRun").disabled = true;
   phase("starting");
   logLine("ok", "goal: " + goal);
   try {
     const g = await build();
-    // fresh agent per run keeps runs independent (memory of past runs would
-    // confuse planning; the VFS/plan are per-run state)
+    
+    
     g._agent.reset();
     g.state = { phase: "idle", plan: null, result: null, export: null };
     g.vfs = new (Object.getPrototypeOf(g.vfs).constructor)();
 
     await g.prompt(goal);
 
-    // post-run summary
+    
     const snap = g.snapshot();
     const blocks = [];
     if (snap.plan) {
@@ -145,7 +164,8 @@ async function onRun() {
       });
       reviewHtml(blocks, { url, name: snap.export.name + ".pkm" });
     } else if (res?.model) {
-      // trained but agent forgot export_model — export anyway
+
+      
       const bytes = res.model.save();
       const blob = new Blob([bytes], { type: "application/octet-stream" });
       const url = URL.createObjectURL(blob);
@@ -156,6 +176,9 @@ async function onRun() {
       if (!blocks.length) blocks.push({ label: "run", value: "no plan produced — see log", color: "var(--bad)" });
       reviewHtml(blocks, null);
     }
+    if (res?.model && res.demoSpec) {
+      tryMountDemo(res.model, res.demoSpec);
+    }
     phase("done");
   } catch (err) {
     logLine("bad", "error: " + (err?.message || String(err)).slice(0, 300));
@@ -165,9 +188,9 @@ async function onRun() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// bind
-// ---------------------------------------------------------------------------
+
+
+
 if (typeof document !== "undefined") {
   $("agRun").addEventListener("click", () => void onRun());
   $("agAB").addEventListener("click", () => {

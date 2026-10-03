@@ -1,14 +1,14 @@
-// PerceptKit agent runtime — goal-driven in-browser training pipeline.
-//
-// The LLM (via the webiome bridge, no auth) plans the run and writes a
-// corruptor + probe as JS code into a virtual filesystem (browsers have no
-// FS, so this Map is the workspace). The pipeline then does the ML
-// heavy-lifting with the published wasm lib (@theabbie/perceptkit):
-//   corruptor -> training set -> train -> held-out eval -> probes -> .pkm
-//
-// The LLM never runs raw eval'd code with training inside it. It writes
-// small, verifiable functions with a fixed contract, and the pipeline
-// validates them before use. Training itself is the wasm trainer.
+
+
+
+
+
+
+
+
+
+
+
 
 import { Agent } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
@@ -27,9 +27,9 @@ const MODEL = {
   maxTokens: 8192,
 };
 
-// ---------------------------------------------------------------------------
-// Virtual filesystem (Map<string,string>) — the agent's workspace
-// ---------------------------------------------------------------------------
+
+
+
 
 export class VFS {
   constructor() {
@@ -51,32 +51,32 @@ const normalizePath = (p) => {
   return s || String(p);
 };
 
-// ---------------------------------------------------------------------------
-// Pipeline — the ML heavy-lifting. Pure-ish: takes wasm + engine + plan,
-// returns results. No LLM involved here.
-// ---------------------------------------------------------------------------
+
+
+
+
 
 export async function runPipeline(wasm, engine, plan, ui) {
   const log = (t) => ui?.log?.(t);
   const onProgress = (e, epochs, loss) =>
     ui?.progress?.(e, epochs, loss);
-  const viz = (event) => ui?.viz?.(event); // live viz events (update/probe/adversarial)
+  const viz = (event) => ui?.viz?.(event); 
   const iterCb = (n, total, text) => ui?.iteration?.(n, total, text);
 
   const kind = plan.training_kind || "dense_mse";
-  const corruptor = plan._corruptor; // compiled fn from the VFS
-  // the probe is OPTIONAL: it returns {cases:[...] } with adversarial
-  // mismatches the next round absorbs; or just {stats:...} for a score card.
+  const corruptor = plan._corruptor; 
+  
+  
   const probe = plan._probe;
   if (!corruptor) return { error: "no corruptor — write corruptor.js first" };
 
   let r = engine.rng(plan.seed ?? 7);
 
   if (kind === "score_pair") {
-    // ---------------------------------------------------------------
-    // Pairwise scorer: same base sample, mild vs severe corruption.
-    // Ranking, not absolute regression (irreducible label ambiguity).
-    // ---------------------------------------------------------------
+    
+    
+    
+    
     const W = plan.img_w ?? engine.DOC_W, H = plan.img_h ?? engine.DOC_H;
     const PATCH = plan.patch ?? engine.DOC_PATCH;
     const T = (W / PATCH) * (H / PATCH);
@@ -119,7 +119,7 @@ export async function runPipeline(wasm, engine, plan, ui) {
     const acc = trainer.evalPairAccuracy(model, betterFlat, worseFlat, seqLens);
     log(`train: final pair loss ${last.toFixed(4)}, train acc ${(acc * 100).toFixed(1)}%`);
 
-    // held-out: fresh seed, clean must score above corrupted
+    
     const r2 = engine.rng((plan.seed ?? 7) + 1000);
     let heldOk = 0, heldN = 0;
     for (let p = 0; p < 40; p++) {
@@ -146,13 +146,14 @@ export async function runPipeline(wasm, engine, plan, ui) {
         { label: "train pair acc", value: (acc * 100).toFixed(1) + "%" },
         { label: "held-out clean>corrupt", value: (heldAcc * 100).toFixed(1) + "%" },
       ], probe: probeOut,
+      demoSpec: { kind: "score", W, H, PATCH, inCh: 1 },
     };
   }
 
-  // ---------------------------------------------------------------
-  // Dense per-token training (classification / generation).
-  // out_channels = C * PATCH^2: the head predicts the full patch.
-  // ---------------------------------------------------------------
+  
+  
+  
+  
   const W = plan.img_w ?? engine.DIGIT_W, H = plan.img_h ?? engine.DIGIT_H;
   const PATCH = plan.patch ?? engine.DIGIT_PATCH;
   const inCh = plan.in_channels ?? 1;
@@ -167,7 +168,7 @@ export async function runPipeline(wasm, engine, plan, ui) {
   const gen = plan.gen || ((r, label) => engine.genDigit(label ?? 0, r));
   const nLabels = plan.labels?.length || 10;
 
-  // adversarial iteration state: a bag of hard cases + severity escalation
+  
   const adv = { bag: [], severity: plan.corrupt_severity ?? 0.15, iteration: 0, losses: [] };
 
   const buildAndTrainData = () => {
@@ -239,15 +240,15 @@ export async function runPipeline(wasm, engine, plan, ui) {
         log("probe: ok");
       } catch (err) { log("probe error: " + String(err).slice(0, 120)); }
     }
-    // absorb probe-returned cases into the hard bag (severity ramp)
+    
     let added = 0;
     for (const m of ((probeOut?.cases) || []).slice(0, 20)) {
       const sample = m.sample ?? m.input ?? m.img;
       if (sample !== undefined) { adv.bag.push(sample); added++; }
     }
-    // if probe returned nothing hard, mine held-out mismatches (labels stay intact)
+    
     for (const mm of held.mismatches.slice(0, 8)) {
-      try { adv.bag.push(mm.img); added++; } catch { /* ignore */ }
+      try { adv.bag.push(mm.img); added++; } catch {  }
     }
     if (added) {
       adv.severity = Math.min(0.55, adv.severity + 0.05);
@@ -257,7 +258,7 @@ export async function runPipeline(wasm, engine, plan, ui) {
     if (held.acc > best.acc) {
       best = { acc: held.acc, model, metrics: roundMetrics, probe: probeOut };
     }
-    if (!added && held.acc > 0.9) break; // converged, nothing hard left
+    if (!added && held.acc > 0.9) break; 
   }
   if (best.model) {
     const finalIdx = adv.iteration;
@@ -273,17 +274,21 @@ export async function runPipeline(wasm, engine, plan, ui) {
       { label: "held-out acc (best round)", value: (roundMetrics.acc * 100).toFixed(1) + "%" },
       { label: "iterations", value: String(adv.iteration + 1) },
     ], probe: probeOut, perClass: roundMetrics.perClass, perClassTot: roundMetrics.perClassTot,
+    demoSpec: {
+      kind: "classify", W, H, PATCH, inCh,
+      labels: plan.labels || Array.from({ length: nLabels }, (_, i) => String(i)),
+    },
   };
 }
 
-// ---------------------------------------------------------------------------
-// PerceptKitAgent — Agent + tools + VFS. The LLM plans; the pipeline trains.
-// ---------------------------------------------------------------------------
+
+
+
 
 export class PerceptKitAgent {
   constructor({ pkg, engine, ui }) {
-    this.pkg = pkg;       // wasm module namespace (initialized)
-    this.engine = engine; // engine.js namespace
+    this.pkg = pkg;       
+    this.engine = engine; 
     this.ui = ui;
     this.vfs = new VFS();
     this.state = { phase: "idle", plan: null, result: null };
@@ -355,7 +360,7 @@ export class PerceptKitAgent {
     ].join("\n");
   }
 
-  // -- SSE bridge (same protocol as webiome) --------------------------------
+  
 
   _stream(model, context, options) {
     const stream = createAssistantMessageEventStream();
@@ -417,7 +422,7 @@ export class PerceptKitAgent {
     }
   }
 
-  // -- agent events -> UI log ------------------------------------------------
+  
 
   _onEvent(event) {
     const log = (t) => this.ui?.log?.(t);
@@ -446,24 +451,26 @@ export class PerceptKitAgent {
     }
   }
 
-  // -- tools ------------------------------------------------------------------
+  
 
   _buildTools() {
     const self = this;
 
-    // Compile LLM-written function source. Accepts the common forms the
-    // model emits: `function f(...){}`, `function(...){}` (anonymous
-    // expression), `(...) => {...}`, with or without wrapping parens.
-    // Evaluate the source ONCE as an expression to extract the function
-    // itself; fall back to a named-declaration body if that fails.
-    const compileFn = (src) => {
-      const s = String(src).trim().replace(/;+$/, "");
-      // expression form: (source) evaluates to the function value
+    
+    
+    
+    
+    
+    const compileFn = (src, label) => {
+      const tag = label ? `//# sourceURL=vfs/${label}` : "";
+      const s0 = String(src).trim().replace(/;+$/, "");
+      const s = tag ? s0 + "\\n" + tag : s0;
+      
       try {
         const inner = new Function(`"use strict";\nreturn (${s});`)();
         if (typeof inner === "function") return inner;
-      } catch { /* fall through */ }
-      // declaration form: `function name(...) {...}` as a statement body
+      } catch {  }
+      
       const m = s.match(/function\s+([A-Za-z_$][\w$]*)\s*\(/);
       if (m) {
         const inner = new Function(`"use strict";\n${s}\nreturn ${m[1]};`)();
@@ -472,8 +479,18 @@ export class PerceptKitAgent {
       throw new Error("source did not evaluate to a function — write `function(args){...}` or `(args) => {...}`");
     };
 
-    // AgentToolResult helper: text back to the model, details for the UI.
-    // Tools THROW on failure (the loop converts that to an error result).
+    const withStack = (err, where) => {
+      const stack = String(err?.stack || "").split("\\n")
+        .filter((l) => l.includes("vfs/") || l.trim().startsWith("at "))
+        .slice(0, 4).join(" | ");
+      return new Error(
+        `${where} failed: ${String(err?.message || err).slice(0, 150)}. ` +
+        `Stack: ${stack.slice(0, 300)}. ` +
+        `Fix by rewriting that function (write_corruptor / write_probe / plan_label_set gen or render), then retry run_pipeline.`);
+    };
+
+    
+    
     const ok = (text, details) => ({
       content: [{ type: "text", text }],
       details: details ?? {},
@@ -499,6 +516,7 @@ export class PerceptKitAgent {
           n_per_class: Type.Optional(Type.Number({ description: "Samples per class (default 60)" })),
           n_pairs: Type.Optional(Type.Number({ description: "Pairs for score_pair (default 120)" })),
           epochs: Type.Optional(Type.Number({ description: "Training epochs (default 80 dense / 30 pair)" })),
+          max_iterations: Type.Optional(Type.Number({ description: "Adversarial training rounds (default 3). Each round mines hard cases from held-out errors and retrains with stronger corruption." })),
           lr: Type.Optional(Type.Number()),
           seed: Type.Optional(Type.Number()),
           corrupt_severity: Type.Optional(Type.Number({ description: "Training corruption severity 0..1 (default 0.15)" })),
@@ -507,11 +525,11 @@ export class PerceptKitAgent {
         execute: async (_toolCallId, args) => {
           const plan = { ...args };
           if (args.gen) {
-            try { plan.gen = compileFn(args.gen); }
+            try { plan.gen = compileFn(args.gen, "gen.js"); }
             catch (err) { throw new Error("gen compile failed: " + String(err).slice(0, 150)); }
           }
           if (args.render) {
-            try { plan.render = compileFn(args.render); }
+            try { plan.render = compileFn(args.render, "render.js"); }
             catch (err) { throw new Error("render compile failed: " + String(err).slice(0, 150)); }
           }
           self.state.plan = plan;
@@ -529,14 +547,15 @@ export class PerceptKitAgent {
         }),
         execute: async (_toolCallId, args) => {
           let fn;
-          try { fn = compileFn(args.code); }
+          try { fn = compileFn(args.code, "corruptor.js"); }
           catch (err) { throw new Error("compile failed: " + String(err).slice(0, 150)); }
-          // smoke test against the plan's generator (or default digits)
           const r = self.engine.rng(42);
           const plan = self.state.plan || {};
           const gen = plan.gen || ((rng2, label) => self.engine.genDigit(label ?? 0, rng2));
           const sample = gen(r, 0);
-          const out = fn(sample, 0.5, r, 0);
+          let out;
+          try { out = fn(sample, 0.5, r, 0); }
+          catch (err) { throw withStack(err, "corruptor smoke test"); }
           const sameShape = out && typeof out === typeof sample &&
             (ArrayBuffer.isView(sample) ? out.length === sample.length : true);
           if (!sameShape) {
@@ -557,7 +576,7 @@ export class PerceptKitAgent {
         }),
         execute: async (_toolCallId, args) => {
           let fn;
-          try { fn = compileFn(args.code); }
+          try { fn = compileFn(args.code, "probe.js"); }
           catch (err) { throw new Error("compile failed: " + String(err).slice(0, 150)); }
           self.vfs.write("scratch/probe.js", args.code);
           if (self.state.plan) self.state.plan._probe = fn;
@@ -574,10 +593,17 @@ export class PerceptKitAgent {
           const plan = self.state.plan;
           if (!plan) throw new Error("no plan — call plan_label_set first");
           if (!plan._corruptor) throw new Error("no corruptor — call write_corruptor first");
-          const result = await runPipeline(self.pkg, self.engine, plan, {
-            log: (t) => self.ui?.log?.(t),
-            progress: (e, epochs, loss) => self.ui?.progress?.(e, epochs, loss),
-          });
+          let result;
+          try {
+            result = await runPipeline(self.pkg, self.engine, plan, {
+              log: (t) => self.ui?.log?.(t),
+              progress: (e, epochs, loss) => self.ui?.progress?.(e, epochs, loss),
+              iteration: (n, total, t) => self.ui?.iteration?.(n, total, t),
+              viz: (e) => self.ui?.viz?.(e),
+            });
+          } catch (err) {
+            throw withStack(err, "pipeline (likely a gen/render/corruptor bug)");
+          }
           self.state.result = result;
           if (result.error) throw new Error(result.error);
           const summary = result.metrics.map((m) => `${m.label}: ${m.value}`).join("; ");
@@ -635,7 +661,7 @@ export class PerceptKitAgent {
     ];
   }
 
-  // -- public API ---------------------------------------------------------------
+  
 
   async prompt(text) {
     await this._agent.prompt(text);
