@@ -1,3 +1,6 @@
+import { DrawPad } from "./kit/canvas.js?v=1.0";
+import * as viz from "./kit/viz.js?v=1.0";
+
 export function demoInfer(px, model, wasm, spec, session) {
   let min = 255, max = 0;
   for (const v of px) { if (v < min) min = v; if (v > max) max = v; }
@@ -24,7 +27,23 @@ export function demoInfer(px, model, wasm, spec, session) {
   return { kind: "score", score: s, rel: (s - session.scoreMin) / span };
 }
 
-export function mountDemo({ container, model, wasm, spec, engine }) {
+function slider(labelText, min, max, step, val) {
+  const wrap = document.createElement("label");
+  wrap.style.cssText = "display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dim,#a1a1aa);font-family:monospace";
+  const txt = document.createElement("span");
+  txt.textContent = labelText;
+  const input = document.createElement("input");
+  input.type = "range";
+  input.min = min; input.max = max; input.step = step; input.value = val;
+  input.style.cssText = "width:110px;accent-color:#38bdf8";
+  const valEl = document.createElement("span");
+  valEl.textContent = val;
+  input.addEventListener("input", () => { valEl.textContent = input.value; });
+  wrap.append(txt, input, valEl);
+  return { wrap, input };
+}
+
+export function mountDemo({ container, model, wasm, spec, engine, corruptor }) {
   container.innerHTML = "";
   container.style.display = "";
 
@@ -33,149 +52,108 @@ export function mountDemo({ container, model, wasm, spec, engine }) {
   const title = document.createElement("span");
   title.className = "ag-report-label";
   title.textContent = spec.kind === "classify"
-    ? "live demo — draw a " + (spec.labels.join("/")) + ", the model classifies"
-    : "live demo — draw, the model scores it";
+    ? "draw a " + (spec.labels.join("/")) + " — the model classifies"
+    : "draw — the model scores it";
   const clearBtn = document.createElement("button");
   clearBtn.className = "primary";
   clearBtn.textContent = "clear";
   clearBtn.style.cssText = "padding:4px 10px;font-size:11px";
   head.append(title, clearBtn);
 
-  const canvas = document.createElement("canvas");
-  canvas.width = spec.W;
-  canvas.height = spec.H;
-  canvas.style.cssText =
-    "width:100%;aspect-ratio:" + spec.W + "/" + spec.H +
-    ";image-rendering:pixelated;background:#000;border:1px solid var(--edge);border-radius:4px;cursor:crosshair;touch-action:none";
+  const controls = document.createElement("div");
+  controls.style.cssText = "display:flex;gap:18px;align-items:center;margin:8px 0;flex-wrap:wrap";
+  const strokeCtl = slider("stroke", 0.5, 4, 0.5, 1.5);
+  controls.append(strokeCtl.wrap);
+  let sevCtl = null;
+  if (spec.kind === "score" && corruptor) {
+    sevCtl = slider("corrupt", 0, 1, 0.05, 0);
+    controls.append(sevCtl.wrap);
+  }
 
+  const row = document.createElement("div");
+  row.style.cssText = "display:grid;grid-template-columns:minmax(220px,340px) 1fr;gap:14px;align-items:start";
+  const canvas = document.createElement("canvas");
+  canvas.style.cssText = "width:100%;background:#000;border:1px solid var(--edge,#27272a);border-radius:6px;cursor:crosshair";
+  const right = document.createElement("div");
   const out = document.createElement("div");
   out.className = "ag-stats";
-  out.style.marginTop = "8px";
-  out.textContent = "draw with the mouse / finger";
-
-  const barWrap = document.createElement("div");
-  barWrap.style.cssText = "margin-top:6px;display:none";
+  out.textContent = "draw with mouse / finger";
   const barBox = document.createElement("canvas");
-  barBox.width = 400; barBox.height = 140;
-  barBox.style.cssText = "width:100%;image-rendering:pixelated;background:#000;border-radius:4px";
-  barWrap.append(barBox);
+  barBox.style.cssText = "width:100%;display:none;margin-top:6px";
+  const gaugeBox = document.createElement("canvas");
+  gaugeBox.style.cssText = "width:100%;display:none;margin-top:6px";
+  const cmpBox = document.createElement("canvas");
+  cmpBox.style.cssText = "width:100%;display:none;margin-top:10px";
+  const cmpOut = document.createElement("div");
+  cmpOut.className = "ag-stats";
+  right.append(out, barBox, gaugeBox, cmpBox, cmpOut);
+  row.append(canvas, right);
+  container.append(head, controls, row);
 
-  container.append(head, canvas, out, barWrap);
-
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, spec.W, spec.H);
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = Math.max(1.2, spec.W / 22);
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-
-  let drawing = false, dirty = false, raf = 0;
-
-  const pos = (ev) => {
-    const r = canvas.getBoundingClientRect();
-    return [
-      (ev.clientX - r.left) * spec.W / r.width,
-      (ev.clientY - r.top) * spec.H / r.height,
-    ];
-  };
-
-  const luma = () => {
-    const d = ctx.getImageData(0, 0, spec.W, spec.H).data;
-    const px = new Uint8Array(spec.W * spec.H);
-    for (let i = 0; i < px.length; i++) px[i] = d[i * 4];
-    return px;
-  };
+  const pad = new DrawPad(canvas, { W: spec.W, H: spec.H, ss: 8, stroke: 1.5 });
+  strokeCtl.input.addEventListener("input", () => pad.setStroke(parseFloat(strokeCtl.input.value)));
+  clearBtn.addEventListener("click", () => {
+    pad.clear();
+    cmpBox.style.display = "none";
+    cmpOut.textContent = "";
+  });
 
   const session = { scoreMin: Infinity, scoreMax: -Infinity };
+  const cmpSession = { scoreMin: Infinity, scoreMax: -Infinity };
 
-  const infer = () => {
-    if (!dirty) return;
-    dirty = false;
-    const r = demoInfer(luma(), model, wasm, spec, session);
-    if (r.empty) { out.textContent = "draw with the mouse / finger"; return; }
-    if (r.kind === "classify") {
-      out.textContent = "prediction: " + r.label;
-      barWrap.style.display = "";
-      drawClassifyBars(barBox, spec.labels, r.norm, r.best);
+  const run = () => {
+    const f32 = pad.pixels();
+    const px = new Uint8Array(f32.length);
+    for (let i = 0; i < f32.length; i++) px[i] = Math.round(f32[i] * 255);
+    const res = demoInfer(px, model, wasm, spec, session);
+    if (res.empty) {
+      out.textContent = "draw with mouse / finger";
+      barBox.style.display = "none";
+      gaugeBox.style.display = "none";
+      cmpBox.style.display = "none";
+      cmpOut.textContent = "";
+      return;
+    }
+    if (res.kind === "classify") {
+      out.textContent = `predicted: ${res.label}`;
+      barBox.style.display = "";
+      viz.bars(barBox, res.norm, { labels: spec.labels });
+      gaugeBox.style.display = "none";
     } else {
-      out.textContent = "score: " + r.score.toFixed(3) +
-        "  (higher = cleaner; relative " + (r.rel * 100).toFixed(0) + "% this session)";
-      barWrap.style.display = "";
-      drawScoreGauge(barBox, r.rel, r.score);
+      out.textContent = `score: ${res.score.toFixed(3)}  (higher = cleaner)`;
+      gaugeBox.style.display = "";
+      viz.gauge(gaugeBox, res.rel, { raw: res.score });
+      barBox.style.display = "none";
+      if (sevCtl && corruptor) {
+        const sev = parseFloat(sevCtl.input.value);
+        if (sev > 0) {
+          try {
+            const corrupted = corruptor(new Float32Array(f32), sev, engine.rng((Math.random() * 1e9) | 0), 0);
+            const cpx = new Uint8Array(corrupted.length);
+            for (let i = 0; i < corrupted.length; i++) {
+              cpx[i] = Math.max(0, Math.min(255, Math.round(corrupted[i] * 255)));
+            }
+            const cres = demoInfer(cpx, model, wasm, spec, cmpSession);
+            cmpBox.style.display = "";
+            viz.compare(cmpBox,
+              { img: f32, w: spec.W, h: spec.H },
+              { img: corrupted, w: spec.W, h: spec.H },
+              { labels: ["yours", `corrupt ${sev.toFixed(2)}`], cell: 110 });
+            cmpOut.textContent = cres.empty
+              ? "corrupted sample scores below draw threshold"
+              : `yours ${res.score.toFixed(3)} vs corrupted ${cres.score.toFixed(3)} — gap ${(res.score - cres.score).toFixed(3)}`;
+          } catch (e) {
+            cmpOut.textContent = `corrupt preview failed: ${e.message}`;
+          }
+        } else {
+          cmpBox.style.display = "none";
+          cmpOut.textContent = "";
+        }
+      }
     }
   };
+  pad.onChange(run);
 
-  const pump = () => { raf = 0; infer(); };
-  const mark = () => { dirty = true; if (!raf) raf = requestAnimationFrame(pump); };
-
-  canvas.addEventListener("pointerdown", (ev) => {
-    drawing = true;
-    try { canvas.setPointerCapture(ev.pointerId); } catch { }
-    const [x, y] = pos(ev);
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.lineTo(x + 0.01, y + 0.01);
-    ctx.stroke();
-    mark();
-  });
-  canvas.addEventListener("pointermove", (ev) => {
-    if (!drawing) return;
-    const [x, y] = pos(ev);
-    ctx.lineTo(x, y);
-    ctx.stroke();
-    mark();
-  });
-  const up = () => { drawing = false; };
-  canvas.addEventListener("pointerup", up);
-  canvas.addEventListener("pointercancel", up);
-  clearBtn.addEventListener("click", () => {
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, spec.W, spec.H);
-    session.scoreMin = Infinity; session.scoreMax = -Infinity;
-    out.textContent = "draw with the mouse / finger";
-    barWrap.style.display = "none";
-    dirty = false;
-  });
-
-  return { canvas, inferNow: () => { dirty = true; infer(); } };
-}
-
-function drawClassifyBars(canvas, labels, norm, best) {
-  const ctx = canvas.getContext("2d");
-  const W = canvas.width, H = canvas.height;
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = "#0a0a0b"; ctx.fillRect(0, 0, W, H);
-  const n = labels.length;
-  const bw = (W - 12) / n;
-  ctx.font = "11px ui-monospace, monospace";
-  ctx.textAlign = "center";
-  for (let i = 0; i < n; i++) {
-    const h = Math.max(2, norm[i] * (H - 34));
-    ctx.fillStyle = i === best ? "#4ade80" : "#0ea5e9";
-    ctx.fillRect(6 + i * bw, H - 16 - h, bw - 3, h);
-    ctx.fillStyle = "#a1a1aa";
-    ctx.fillText(String(labels[i]), 6 + i * bw + bw / 2, H - 3);
-  }
-  ctx.textAlign = "left";
-}
-
-function drawScoreGauge(canvas, rel, raw) {
-  const ctx = canvas.getContext("2d");
-  const W = canvas.width, H = canvas.height;
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = "#0a0a0b"; ctx.fillRect(0, 0, W, H);
-  const gw = W - 24, gh = 26, gx = 12, gy = H / 2 - 26;
-  ctx.fillStyle = "#1f2937";
-  ctx.fillRect(gx, gy, gw, gh);
-  const frac = Math.max(0.02, Math.min(1, rel));
-  const grad = ctx.createLinearGradient(gx, 0, gx + gw, 0);
-  grad.addColorStop(0, "#f87171");
-  grad.addColorStop(0.5, "#fbbf24");
-  grad.addColorStop(1, "#4ade80");
-  ctx.fillStyle = grad;
-  ctx.fillRect(gx, gy, gw * frac, gh);
-  ctx.fillStyle = "#a1a1aa";
-  ctx.font = "12px ui-monospace, monospace";
-  ctx.fillText("raw score " + raw.toFixed(3), gx, gy + gh + 18);
+  window.__demo = { canvas, pad, inferNow: () => pad.inferNow(), container };
+  return window.__demo;
 }

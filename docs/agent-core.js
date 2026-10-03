@@ -11,6 +11,7 @@
 
 
 import { Agent } from "@earendil-works/pi-agent-core";
+import * as kit from "./kit/synth.js?v=1.0";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 
 const API_ENDPOINT = "https://webiome.abbie.workers.dev/api/stream";
@@ -93,13 +94,13 @@ export async function runPipeline(wasm, engine, plan, ui) {
     const margins = new Float32Array(nPairs).fill(0.5);
 
     for (let p = 0; p < nPairs; p++) {
-      const sample = base(r);
+      const sample = base(r, 0, kit);
       let mild, severe;
       try {
-        mild = corruptor(sample, 0.1 * r(), r);
-        severe = corruptor(sample, 0.7 + 0.3 * r(), r);
-        wasm.patchifyImage(render(mild), W, H, PATCH, 1);
-        wasm.patchifyImage(render(severe), W, H, PATCH, 1);
+        mild = corruptor(sample, 0.1 * r(), r, 0, kit);
+        severe = corruptor(sample, 0.7 + 0.3 * r(), r, 0, kit);
+        wasm.patchifyImage(render(mild, kit), W, H, PATCH, 1);
+        wasm.patchifyImage(render(severe, kit), W, H, PATCH, 1);
       } catch (e) {
         const dump = (v) => {
           if (ArrayBuffer.isView(v)) return `[${v.constructor.name} ${v.length}]`;
@@ -112,9 +113,9 @@ export async function runPipeline(wasm, engine, plan, ui) {
           `Fix the corruptor or render to return the same shape as the sample.`);
       }
       betterFlat.set(
-        wasm.patchifyImage(render(mild), W, H, PATCH, 1), p * T * IN);
+        wasm.patchifyImage(render(mild, kit), W, H, PATCH, 1), p * T * IN);
       worseFlat.set(
-        wasm.patchifyImage(render(severe), W, H, PATCH, 1), p * T * IN);
+        wasm.patchifyImage(render(severe, kit), W, H, PATCH, 1), p * T * IN);
     }
     viz({ type: "update", stage: "data", message: `building ${nPairs} pairwise samples` });
     log(`data: ${nPairs} pairs (mild vs severe), ${T} tokens/seq`);
@@ -138,9 +139,9 @@ export async function runPipeline(wasm, engine, plan, ui) {
     const r2 = engine.rng((plan.seed ?? 7) + 1000);
     let heldOk = 0, heldN = 0;
     for (let p = 0; p < 40; p++) {
-      const sample = base(r2);
-      const clean = wasm.patchifyImage(render(sample), W, H, PATCH, 1);
-      const bad = wasm.patchifyImage(render(corruptor(sample, 0.8, r2)), W, H, PATCH, 1);
+      const sample = base(r2, 0, kit);
+      const clean = wasm.patchifyImage(render(sample, kit), W, H, PATCH, 1);
+      const bad = wasm.patchifyImage(render(corruptor(sample, 0.8, r2, 0, kit), kit), W, H, PATCH, 1);
       heldN++;
       if (model.score(clean, T) > model.score(bad, T)) heldOk++;
     }
@@ -150,7 +151,7 @@ export async function runPipeline(wasm, engine, plan, ui) {
     let probeOut = null;
     if (probe) {
       try {
-        probeOut = probe({ model, wasm, engine, rng: r2 });
+        probeOut = probe({ model, wasm, engine, rng: r2, kit });
         viz({ type: "probe", probe: probeOut, model });
         log("probe: ok");
       } catch (err) { log("probe error: " + String(err).slice(0, 120)); }
@@ -193,8 +194,8 @@ export async function runPipeline(wasm, engine, plan, ui) {
     const masksFlat = new Float32Array(N * T).fill(1.0);
     for (let i = 0; i < N; i++) {
       const label = i % nLabels;
-      const raw = gen(r, label);
-      const img = corruptor(raw, adv.severity, r, label);
+      const raw = gen(r, label, kit);
+      const img = corruptor(raw, adv.severity, r, label, kit);
       tokensFlat.set(wasm.patchifyImage(img, W, H, PATCH, inCh), i * T * IN);
       for (let t = 0; t < T; t++) {
         if (outCh === nLabels) targetsFlat[(i * T + t) * OUT + label] = 1.0;
@@ -212,8 +213,8 @@ export async function runPipeline(wasm, engine, plan, ui) {
     const mismatches = [];
     for (let i = 0; i < 10 * nLabels; i++) {
       const label = i % nLabels;
-      const raw = gen(r2, label);
-      const img = corruptor(raw, adv.severity, r2, label);
+      const raw = gen(r2, label, kit);
+      const img = corruptor(raw, adv.severity, r2, label, kit);
       const tokens = wasm.patchifyImage(img, W, H, PATCH, inCh);
       const out = model.transform(tokens, T);
       const scores = new Array(nLabels).fill(0);
@@ -250,7 +251,7 @@ export async function runPipeline(wasm, engine, plan, ui) {
     if (probe) {
       const r2 = engine.rng((plan.seed ?? 7) + 2000 + it);
       try {
-        probeOut = probe({ model, wasm, engine, rng: r2, iteration: it });
+        probeOut = probe({ model, wasm, engine, rng: r2, kit, iteration: it });
         viz({ type: "probe", probe: probeOut, model });
         log("probe: ok");
       } catch (err) { log("probe error: " + String(err).slice(0, 120)); }
@@ -346,6 +347,22 @@ export class PerceptKitAgent {
       "   - scenes: genScene returns 32x32 RGB Float32Array",
       "   If the goal needs different data, pass a `gen` function in the plan",
       "   (same call contract: gen(rng, label)).",
+      "KIT (available as the `kit` arg in gen/corruptor/render, and in the",
+      "   probe arg object). All operate on Float32Array images (row-major,",
+      "   0..1). USE THE KIT instead of writing raw pixel loops:",
+      "   kit.blank(W,H) clone(img)",
+      "   kit.circle/ellipse/rect(img,W,H,...) opts {fill,stroke,w,soft}",
+      "   kit.line(img,W,H,x0,y0,x1,y1,{w,val}) polyline(img,W,H,pts,opts)",
+      "   kit.bezier(img,W,H,[p0,p1,p2(,p3)],opts) polygon(img,W,H,pts,opts)",
+      "   kit.text(img,W,H,str,x,y,{scale}) — 5x7 caps+digits font",
+      "   kit.noise(img,rng,p) gauss(img,rng,sigma) dropout(img,rng,p)",
+      "   kit.translate/rotate/shear/scaleImg(img,W,H,...) — return NEW image",
+      "   kit.occlude(img,W,H,x,y,w,h,val) invert threshold blur3 clamp01",
+      "   kit.coverage(img,t) centroid(img,W,H) bbox(img,W,H,t) — measures",
+      "   e.g. corruptor = (s, sev, rng) => kit.clamp01(kit.gauss(",
+      "     kit.translate(s, W, H, (rng()-0.5)*8*sev, (rng()-0.5)*8*sev),",
+      "     rng, sev*0.3));",
+      "",
       "3. write_probe (recommended) — function({model, wasm, engine, rng,",
       "   iteration}) -> JSON result for the score card AND, optionally,",
       "   adversarial cases: return {stats:{...}, cases:[{sample|input|img,",
@@ -518,6 +535,23 @@ export class PerceptKitAgent {
       details: details ?? {},
     });
 
+    const wrap = (t) => {
+      const exec = t.execute;
+      t.execute = async (id, args) => {
+        self.ui?.toolStart?.(t.name);
+        try {
+          const r = await exec(id, args);
+          const txt = r?.content?.[0]?.text ?? "";
+          self.ui?.toolEnd?.(t.name, true, txt.slice(0, 160));
+          return r;
+        } catch (e) {
+          self.ui?.toolEnd?.(t.name, false, String(e?.message || e).slice(0, 160));
+          throw e;
+        }
+      };
+      return t;
+    };
+
     return [
       {
         name: "plan_label_set",
@@ -562,7 +596,7 @@ export class PerceptKitAgent {
       {
         name: "write_corruptor",
         label: "Write corruptor",
-        description: "Write the corruption function source. Contract: function(sample, severity, rng, label) -> corrupted sample, SAME shape as input. rng() is uniform [0,1). Keep coordinates integral.",
+        description: "Write the corruption function source. Contract: function(sample, severity, rng, label, kit) -> corrupted sample, SAME shape as input. rng() is uniform [0,1). kit has image helpers (noise, gauss, translate, rotate, occlude, dropout, clamp01...) — use them instead of raw pixel loops.",
         parameters: Type.Object({
           name: Type.String({ description: "Corruptor name (from the plan)" }),
           code: Type.String({ description: "Function source, e.g. 'function(sample, severity, rng, label) { ... return out; }'" }),
@@ -574,9 +608,9 @@ export class PerceptKitAgent {
           const r = self.engine.rng(42);
           const plan = self.state.plan || {};
           const gen = plan.gen || ((rng2, label) => self.engine.genDigit(label ?? 0, rng2));
-          const sample = gen(r, 0);
+          const sample = gen(r, 0, kit);
           let out;
-          try { out = fn(sample, 0.5, r, 0); }
+          try { out = fn(sample, 0.5, r, 0, kit); }
           catch (err) { throw withStack(err, "corruptor smoke test"); }
           const sameShape = out && typeof out === typeof sample &&
             (ArrayBuffer.isView(sample) ? out.length === sample.length : true);
@@ -592,7 +626,7 @@ export class PerceptKitAgent {
       {
         name: "write_probe",
         label: "Write probe",
-        description: "Optional: write a probe function for the score card. Contract: function({model, wasm, engine, rng}) -> JSON-serializable result.",
+        description: "Optional: write a probe function for the score card. Contract: function({model, wasm, engine, rng, kit}) -> JSON-serializable result. Prefer fields the UI renders natively: losses:[{epoch,value}], values+labels, matrix (+rowLabels/colLabels), points, scores, cases:[{img,w,h,label,predicted,ok}].",
         parameters: Type.Object({
           code: Type.String({ description: "Function source" }),
         }),
@@ -680,7 +714,7 @@ export class PerceptKitAgent {
           trained: !!self.state.result?.model,
         }), {}),
       },
-    ];
+    ].map(wrap);
   }
 
   

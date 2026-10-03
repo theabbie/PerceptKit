@@ -3,74 +3,79 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PerceptKit — agent + self-supervised transformer labs</title>
+<title>PerceptKit — agent-built perception models in your browser</title>
 <style>
-  :root { --bg:#0a0a0b; --panel:#111329; --panel2:#111f3a; --edge:#1f2937; --fg:#f4f4f5; --dim:#a1a1aa; --acc:#0ea5e9; --good:#4ade80; --bad:#f87171; }
+  :root {
+    --bg:#09090b; --panel:#101013; --panel2:#18181b; --edge:#27272a;
+    --fg:#e4e4e7; --dim:#a1a1aa; --faint:#52525b;
+    --acc:#38bdf8; --good:#4ade80; --bad:#f87171; --warn:#fbbf24;
+  }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 system-ui, sans-serif; }
-  header { padding:18px 24px 6px; display:flex; align-items:baseline; gap:12px; }
-  h1 { font-size:19px; margin:0; }
-  header p { margin:0; color:var(--dim); font-size:13px; }
-  header a, nav div a { color:var(--acc); }
-  nav { display:flex; gap:6px; padding:12px 24px 0; flex-wrap:wrap; }
-  nav button { background:var(--panel); border:1px solid var(--edge); color:var(--dim); padding:8px 16px; border-radius:8px; cursor:pointer; font-size:14px; }
-  nav button.active { color:var(--fg); border-bottom-color:var(--acc); background:var(--panel2); }
-  main { padding:16px 24px 40px; max-width:1100px; }
-  section { display:none; }
-  section.active { display:block; }
-  .panel { background:var(--panel); border:1px solid var(--edge); border-radius:10px; padding:16px; margin-bottom:14px; }
-  .panel h2 { margin:0 0 4px; font-size:16px; }
-  .panel .sub { color:var(--dim); font-size:13px; margin:0 0 12px; }
-  button.primary { background:var(--acc); color:#082f49; border:none; padding:9px 18px; border-radius:8px; cursor:pointer; font-size:14px; font-weight:600; }
-  button.primary:disabled { opacity:.5; cursor:default; }
-  button.ghost { background:transparent; color:var(--acc); border:1px solid var(--edge); padding:7px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
-  .bar { height:8px; background:var(--edge); border-radius:4px; overflow:hidden; margin:10px 0 4px; }
-  .bar > div { height:100%; width:0%; background:var(--acc); transition:width .15s; }
-  .status { color:var(--dim); font-size:13px; min-height:1.4em; }
-  .row { display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start; }
-  canvas { image-rendering:pixelated; border:1px solid var(--edge); border-radius:6px; background:#000; }
-  .caption { font-size:12px; color:var(--dim); text-align:center; margin-top:4px; }
-  .score { font-size:22px; font-variant-numeric:tabular-nums; text-align:center; margin-top:2px; }
-  table.scores { border-collapse:collapse; font-size:13px; }
-  td.digit { text-align:right; padding:1px 8px 1px 0; color:var(--dim); width:14px; }
-  td.track { width:140px; height:14px; }
-  td.track > div { height:10px; background:var(--edge); border-radius:3px; overflow:hidden; }
-  td.track > div > div { height:100%; background:var(--acc); }
-  td.val { padding-left:8px; color:var(--dim); font-variant-numeric:tabular-nums; }
-  #digitGrid { display:grid; grid-template-columns:repeat(8, 22px); gap:2px; margin:8px 0; }
-  #digitGrid button { width:22px; height:22px; border:1px solid var(--edge); background:var(--bg); border-radius:3px; cursor:pointer; padding:0; }
-  #digitGrid button.on { background:#e5e7eb; }
-  .verdict { font-size:22px; text-align:center; margin-top:6px; }
-  .hidden { display:none; }
-  input[type=range] { accent-color:var(--acc); }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.55 system-ui, sans-serif; }
+  header { padding:16px 24px 0; display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  h1 { font-size:17px; margin:0; letter-spacing:-.02em; }
+  header p { margin:0; color:var(--dim); font-size:12.5px; }
+  header a { color:var(--acc); text-decoration:none; }
+  .wrap { padding:14px 24px 48px; }
 
-  /* ------- Agent panel (slate/zinc/vercel-ish) ------- */
-  .ag-head { display:flex; justify-content:space-between; align-items:flex-end; margin:0 0 12px; }
-  .ag-head h2 { margin:0; }
-  .ag-head .badge { background:var(--panel2); color:var(--acc); border:1px solid var(--edge); padding:3px 10px; border-radius:999px; font-size:11px; font-weight:600; letter-spacing:.5px; text-transform:uppercase; }
-  #agGoal { width:100%; background:var(--panel2); color:var(--fg); border:1px solid var(--edge); border-radius:8px; padding:12px; resize:vertical; min-height:80px; font:14px/1.45 inherit; }
+  .goalbar { display:flex; gap:10px; align-items:stretch; margin:10px 0 14px; }
+  #agGoal { flex:1; background:var(--panel); color:var(--fg); border:1px solid var(--edge);
+    border-radius:8px; padding:12px 14px; resize:vertical; min-height:52px; font:13.5px/1.45 ui-monospace,Menlo,monospace; }
   #agGoal:focus { outline:1px solid var(--acc); border-color:var(--acc); }
-  .ag-paste { display:flex; gap:8px; }
-  #agPasteRun { width:100%; box-sizing:stretch; border:none; }
-  #agPasteRun:disabled { opacity:.5; }
-  #agRun { flex:1; }
-  #agRun:disabled { opacity:.5; }
-  input[type="submit"], input[type="button"] { background:var(--acc); color:#082f49; border:none; padding:9px 18px; border-radius:8px; cursor:pointer; font-size:14px; font-weight:600; }
-  input[type="submit"]:disabled, input[type="button"]:disabled { opacity:.5; }
-  .ag-report { display:grid; grid-template-columns:1.4fr 1fr; gap:12px; margin-top:12px; }
-  .ag-report .report-pane { background:var(--panel2); border:1px solid var(--edge); border-radius:8px; padding:10px; max-height:340px; overflow:auto; font:13px/1.5 ui-monospace, Menlo, monospace; }
-  .ag-report .review-pane { background:var(--panel2); border:1px solid var(--edge); border-radius:8px; padding:10px; }
-  .probe-pane { background:var(--panel2); border:1px solid var(--edge); border-radius:8px; padding:10px; }
-  .probe-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
-  .iter-badge { background:var(--edge); color:var(--acc); border-radius:999px; padding:2px 10px; font-size:11px; font-weight:600; }
-  .probe-pane canvas { width:100%; image-rendering:pixelated; background:#000; border-radius:4px; margin-bottom:6px; }
-  .ag-stats { font:12px/1.5 ui-monospace, Menlo, monospace; color:var(--dim); }
-  .ag-report-label { font-size:11px; text-transform:uppercase; letter-spacing:.8px; color:var(--dim); margin:0 0 6px; }
-  .ag-download { display:inline-flex; align-items:center; gap:6px; background:#14532d; color:#bbf7d0; border:1px solid #166534; padding:6px 14px; border-radius:8px; text-decoration:none; font-size:13px; margin-left:8px; }
-  .ag-download:hover { background:#166534; }
-  .log { color:var(--dim); font-size:12px; }
-  .log .kind-ok { color:var(--good); } .log .kind-bad { color:var(--bad); }
-  .ag-control { margin-top:8px; }
+  .goalbtns { display:flex; flex-direction:column; gap:8px; }
+  button.primary { background:var(--acc); color:#082f49; border:none; padding:10px 22px;
+    border-radius:8px; cursor:pointer; font-size:14px; font-weight:600; }
+  button.primary:disabled { opacity:.5; cursor:default; }
+  button.ghost { background:transparent; color:var(--dim); border:1px solid var(--edge);
+    padding:8px 14px; border-radius:8px; cursor:pointer; font-size:12.5px; }
+  button.ghost:hover { color:var(--fg); border-color:var(--faint); }
+
+  #board { display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); }
+  @media (min-width:1500px) { #board { grid-template-columns:repeat(5, 1fr); } }
+  .lane { background:var(--panel); border:1px solid var(--edge); border-radius:10px;
+    padding:12px; min-height:150px; display:flex; flex-direction:column; }
+  .lane.demo { grid-column:1 / -1; }
+  @media (min-width:1500px) { .lane.demo { grid-column:auto; } }
+  .lane-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  .lane-title { font-size:11px; text-transform:uppercase; letter-spacing:.9px; color:var(--dim); font-weight:600; }
+  .lane-count { font-size:10.5px; color:var(--faint); font-family:ui-monospace,monospace; }
+  .lane-body { display:flex; flex-direction:column; gap:8px; flex:1; }
+  .lane-empty { color:var(--faint); font-size:12px; font-family:ui-monospace,monospace; margin:auto; padding:18px 0; }
+
+  .card { background:var(--panel2); border:1px solid var(--edge); border-left:3px solid var(--faint);
+    border-radius:8px; padding:9px 11px; font-size:12.5px; }
+  .card.running { border-left-color:var(--warn); }
+  .card.ok { border-left-color:var(--good); }
+  .card.error { border-left-color:var(--bad); }
+  .card-head { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .card-name { font-family:ui-monospace,monospace; font-size:12px; color:var(--fg); }
+  .chip { font-size:10px; padding:1px 8px; border-radius:999px; font-weight:600;
+    text-transform:uppercase; letter-spacing:.4px; white-space:nowrap; }
+  .chip.running { background:#3b2f0b; color:var(--warn); animation:pulse 1.2s infinite; }
+  .chip.ok { background:#052e16; color:var(--good); }
+  .chip.error { background:#450a0a; color:var(--bad); }
+  @keyframes pulse { 50% { opacity:.55; } }
+  .card-detail { margin-top:5px; color:var(--dim); font-family:ui-monospace,monospace;
+    font-size:11px; line-height:1.5; word-break:break-word; white-space:pre-wrap; }
+  .card.error .card-detail { color:#fca5a5; }
+  .card canvas { width:100%; background:#000; border:1px solid var(--edge); border-radius:6px; margin-top:6px; }
+  .ag-download { display:inline-flex; align-items:center; gap:6px; background:#052e16; color:#bbf7d0;
+    border:1px solid #166534; padding:6px 14px; border-radius:8px; text-decoration:none;
+    font-size:12.5px; margin-top:8px; }
+  .ag-download:hover { background:#14532d; }
+  .iter-badge { background:var(--edge); color:var(--acc); border-radius:999px;
+    padding:1px 9px; font-size:10.5px; font-weight:600; }
+  .ag-stats { font:11.5px/1.5 ui-monospace,Menlo,monospace; color:var(--dim); margin-top:6px; }
+  .ag-report-label { font-size:10.5px; text-transform:uppercase; letter-spacing:.8px; color:var(--dim); margin:0 0 6px; }
+  .probe-header { display:flex; justify-content:space-between; align-items:center; margin-top:8px; }
+  .hidden { display:none !important; }
+
+  details#rawlog { margin-top:14px; background:var(--panel); border:1px solid var(--edge); border-radius:10px; }
+  details#rawlog summary { padding:10px 14px; cursor:pointer; color:var(--dim);
+    font-size:11px; text-transform:uppercase; letter-spacing:.9px; }
+  .report-pane { padding:10px 14px; max-height:340px; overflow:auto;
+    font:12px/1.55 ui-monospace,Menlo,monospace; color:var(--dim); white-space:pre-wrap; }
+  .status-line { color:var(--faint); font-size:12px; margin:2px 0 8px; font-family:ui-monospace,monospace; }
 </style>
 <script type="importmap">
 {"imports":{
@@ -93,123 +98,48 @@
 <body>
 <header>
   <h1>PerceptKit</h1>
-  <p><a href="https://github.com/theabbie/PerceptKit">source</a> · <a href="https://github.com/theabbie/PerceptKit/packages">npm</a> · <a href="#agent">run the agent below</a></p>
+  <p>agent-planned, in-browser transformer training · <a href="https://github.com/theabbie/PerceptKit">source</a> · <a href="https://github.com/theabbie/PerceptKit/packages">npm</a></p>
 </header>
-<nav>
-  <button data-tab="classify" class="active">Classify</button>
-  <button data-tab="score">Score</button>
-  <button data-tab="generate">Generate</button>
-</nav>
-<main>
-
-<!-- Agent section: single-pane goal -> pipeline -> export -->
-<section id="agent" class="active">
-  <div class="panel">
-    <div class="ag-head">
-      <h2 style="margin:0">PerceptKit agent</h2>
-      <span class="badge" id="agPhase">idle</span>
-    </div>
-    <p class="sub">Describe a perception goal in natural text. The agent plans corruptors, writes trainers/probes as an in-browser virtual filesystem, runs them against <code>@theabbie/perceptkit</code>, and exports a downloadable <code>.pkm</code>. Workspace clearing will generate values only; weights are saved locally in your browser.</p>
-    <div class="ag-paste">
-      <textarea id="agGoal" placeholder="e.g. score text overlap on document layouts; or classify noisy digits; or colorize synthetic scenes..." spellcheck="false"></textarea>
+<div class="wrap">
+  <div class="goalbar">
+    <textarea id="agGoal" placeholder="describe a perception goal — e.g. score quality of drawn circle; classify noisy digits; detect overlapping text blocks" spellcheck="false"></textarea>
+    <div class="goalbtns">
       <button id="agRun" class="primary" type="button">Run</button>
-    </div>
-    <div class="ag-control">
-      <input type="button" id="agAB" class="ghost" value="Abort" onclick="if(window.abortLast) window.abortLast()">
-    </div>
-    <div class="ag-report">
-      <div class="report-pane" id="agLog">
-        <label class="ag-report-label">run log / training losses</label>
-      </div>
-      <div class="probe-pane">
-        <div class="probe-header">
-          <span class="ag-report-label">live viz / probe</span>
-          <span id="agIter" class="iter-badge">–</span>
-        </div>
-        <canvas id="agProbeCanvas" width="400" height="220"></canvas>
-        <div id="agStats" class="ag-stats"></div>
-      </div>
-    </div>
-    <div style="margin-top:12px">
-      <div class="review-pane" id="agReview">
-        <label class="ag-report-label">objective & metrics</label>
-      </div>
-      <div class="review-pane" id="agDemo" style="display:none"></div>
+      <button id="agAbort" class="ghost" type="button">Abort</button>
     </div>
   </div>
-</section>
-
-<!-- keep original demos, restyled (sections unchanged) -->
-<section id="classify" class="">
-  <div class="panel">
-    <h2>Digit classifier</h2>
-    <p class="sub">Synthetic 8×10 font digits with random shifts and salt noise are generated; a tiny transformer (~9k params) is trained with per-token one-hot outputs. Draw your own digit below after training.</p>
-    <button id="clfTrain" class="primary">Train classifier (~45s)</button>
-    <div class="bar"><div id="clfBar"></div></div>
-    <div class="status" id="clfStatus">Not trained yet.</div>
-  </div>
-  <div class="panel hidden" id="clfPlay">
-    <h2>Draw a digit</h2>
-    <p class="sub">Click cells to toggle pixels. The model classifies after every change.</p>
-    <div class="row">
-      <div>
-        <div id="digitGrid"></div>
-        <button class="ghost" id="clfClear">Clear</button>
-      </div>
-      <div>
-        <table class="scores" id="clfScores"></table>
-        <div class="verdict" id="clfVerdict">—</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section id="score" class="">
-  <div class="panel">
-    <h2>Text-overlap scorer</h2>
-    <p class="sub">Documents rendered as line-art; corruption shifts one line into another (overlap). Trained by pairwise ranking — mild vs severe corruption of the same base doc. Higher score = cleaner layout.</p>
-    <button id="scTrain" class="primary">Train scorer (~5s)</button>
-    <div class="bar"><div id="scBar"></div></div>
-    <div class="status" id="scStatus">Not trained yet.</div>
-  </div>
-  <div class="panel hidden" id="scPlay">
-    <h2>Score a document</h2>
-    <p class="sub">Left: base layout. Right: corrupted at chosen severity. The scorer must rank the clean one higher.</p>
-    <div class="row">
-      <div><canvas id="scClean" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">base layout</div><div class="score" id="scCleanScore">—</div></div>
-      <div><canvas id="scBad" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">corrupted</div><div class="score" id="scBadScore">—</div></div>
-      <div>
-        <p style="margin:0 0 6px">corruption severity: <span id="scSevVal">0.8</span></p>
-        <input type="range" id="scSev" min="0" max="100" value="80">
-        <div style="margin-top:10px"><button class="ghost" id="scNew">New document</button></div>
-        <div class="verdict" id="scVerdict">—</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section id="generate" class="">
-  <div class="panel">
-    <h2>Colorizer</h2>
-    <p class="sub">Synthetic scenes (sky gradient, sun, hills, water) generated in the browser. Model sees only Rec.601 grayscale; the dense head predicts the full RGB patch per token — i.e. it must invent color from luminance + context.</p>
-    <button id="colTrain" class="primary">Train colorizer (~8s)</button>
-    <div class="bar"><div id="colBar"></div></div>
-    <div class="status" id="colStatus">Not trained yet.</div>
-  </div>
-  <div class="panel hidden" id="colPlay">
-    <h2>Colorize a scene</h2>
-    <p class="sub">Left: input (grayscale). Middle: model's colorization. Right: ground truth it never saw.</p>
-    <div class="row">
-      <div><canvas id="colGray" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">input (grayscale)</div></div>
-      <div><canvas id="colOut" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">model colorization</div></div>
-      <div><canvas id="colTrue" width="32" height="32" style="width:192px;height:192px"></canvas><div class="caption">ground truth</div></div>
-      <div style="align-self:center"><button class="ghost" id="colNew">New scene</button></div>
-    </div>
-  </div>
-</section>
-
-</main>
-<script type="module" src="./app.js"></script>
-<script type="module" src="./agent-ui.js?v=0.9"></script>
+  <div class="status-line" id="agStatus">loading wasm…</div>
+  <main id="board">
+    <section class="lane" id="lane-plan">
+      <div class="lane-head"><span class="lane-title">1 · Plan</span><span class="lane-count" id="cnt-plan"></span></div>
+      <div class="lane-body" id="body-plan"><div class="lane-empty">awaiting goal</div></div>
+    </section>
+    <section class="lane" id="lane-code">
+      <div class="lane-head"><span class="lane-title">2 · Code</span><span class="lane-count" id="cnt-code"></span></div>
+      <div class="lane-body" id="body-code"><div class="lane-empty">corruptor + probe fns</div></div>
+    </section>
+    <section class="lane" id="lane-train">
+      <div class="lane-head"><span class="lane-title">3 · Train</span><span class="lane-count" id="cnt-train"></span></div>
+      <div class="lane-body" id="body-train"><div class="lane-empty">dataset → wasm trainer</div></div>
+    </section>
+    <section class="lane" id="lane-eval">
+      <div class="lane-head"><span class="lane-title">4 · Evaluate</span><span class="lane-count" id="cnt-eval"></span></div>
+      <div class="lane-body" id="body-eval"><div class="lane-empty">held-out + probe</div></div>
+    </section>
+    <section class="lane" id="lane-export">
+      <div class="lane-head"><span class="lane-title">5 · Export</span><span class="lane-count" id="cnt-export"></span></div>
+      <div class="lane-body" id="body-export"><div class="lane-empty">.pkm artifact</div></div>
+    </section>
+    <section class="lane demo" id="lane-demo">
+      <div class="lane-head"><span class="lane-title">6 · Live demo</span><span class="lane-count" id="cnt-demo"></span></div>
+      <div class="lane-body" id="body-demo"><div class="lane-empty">train a model, then draw here</div></div>
+    </section>
+  </main>
+  <details id="rawlog">
+    <summary>raw run log</summary>
+    <div class="report-pane" id="agLog"></div>
+  </details>
+</div>
+<script type="module" src="./agent-ui.js?v=1.0"></script>
 </body>
 </html>
