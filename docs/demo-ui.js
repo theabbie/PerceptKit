@@ -111,7 +111,7 @@ export function mountDemo({ container, model, wasm, spec, engine }) {
 
   canvas.addEventListener("pointerdown", (ev) => {
     drawing = true;
-    canvas.setPointerCapture(ev.pointerId);
+    try { canvas.setPointerCapture(ev.pointerId); } catch { }
     const [x, y] = pos(ev);
     ctx.beginPath();
     ctx.moveTo(x, y);
