@@ -463,20 +463,27 @@ export class PerceptKitAgent {
     
     const compileFn = (src, label) => {
       const tag = label ? `//# sourceURL=vfs/${label}` : "";
-      const s0 = String(src).trim().replace(/;+$/, "");
-      const s = tag ? s0 + "\\n" + tag : s0;
-      
+      const s0 = String(src)
+        .replace(/^```[a-z]*\s*/i, "").replace(/```\s*$/, "")
+        .trim().replace(/;+$/, "");
+      const s = s0;
       try {
-        const inner = new Function(`"use strict";\nreturn (${s});`)();
+        const inner = new Function(`"use strict";\nreturn (${s});\n${tag}`)();
         if (typeof inner === "function") return inner;
       } catch {  }
-      
       const m = s.match(/function\s+([A-Za-z_$][\w$]*)\s*\(/);
       if (m) {
-        const inner = new Function(`"use strict";\n${s}\nreturn ${m[1]};`)();
+        const inner = new Function(`"use strict";\n${s}\nreturn ${m[1]};\n${tag}`)();
         if (typeof inner === "function") return inner;
       }
-      throw new Error("source did not evaluate to a function — write `function(args){...}` or `(args) => {...}`");
+      const am = s.match(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function|\()/);
+      if (am) {
+        const inner = new Function(`"use strict";\n${s}\nreturn ${am[1]};\n${tag}`)();
+        if (typeof inner === "function") return inner;
+      }
+      throw new Error(
+        "source did not evaluate to a function — write `function(args){...}` or `(args) => {...}`. " +
+        `Got (${s0.length} chars): ` + s0.slice(0, 80).replace(/\n/g, " "));
     };
 
     const withStack = (err, where) => {
