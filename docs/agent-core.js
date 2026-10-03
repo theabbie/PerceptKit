@@ -94,8 +94,23 @@ export async function runPipeline(wasm, engine, plan, ui) {
 
     for (let p = 0; p < nPairs; p++) {
       const sample = base(r);
-      const mild = corruptor(sample, 0.1 * r(), r);
-      const severe = corruptor(sample, 0.7 + 0.3 * r(), r);
+      let mild, severe;
+      try {
+        mild = corruptor(sample, 0.1 * r(), r);
+        severe = corruptor(sample, 0.7 + 0.3 * r(), r);
+        wasm.patchifyImage(render(mild), W, H, PATCH, 1);
+        wasm.patchifyImage(render(severe), W, H, PATCH, 1);
+      } catch (e) {
+        const dump = (v) => {
+          if (ArrayBuffer.isView(v)) return `[${v.constructor.name} ${v.length}]`;
+          if (Array.isArray(v)) return `[array ${v.length}: ${JSON.stringify(v[0]).slice(0,40)}...]`;
+          return typeof v + " " + JSON.stringify(v)?.slice(0, 60);
+        };
+        throw new Error(
+          `corruptor/render crash at pair ${p}: ${e.message}. ` +
+          `sample=${dump(sample)} mild=${dump(mild)} severe=${dump(severe)}. ` +
+          `Fix the corruptor or render to return the same shape as the sample.`);
+      }
       betterFlat.set(
         wasm.patchifyImage(render(mild), W, H, PATCH, 1), p * T * IN);
       worseFlat.set(
@@ -487,8 +502,8 @@ export class PerceptKitAgent {
     };
 
     const withStack = (err, where) => {
-      const stack = String(err?.stack || "").split("\\n")
-        .filter((l) => l.includes("vfs/") || l.trim().startsWith("at "))
+        const stack = String(err?.stack || err?.message || "").split("\n")
+        .filter((l) => l.includes("vfs/") || l.trim().startsWith("at ") || l.includes("Error"))
         .slice(0, 4).join(" | ");
       return new Error(
         `${where} failed: ${String(err?.message || err).slice(0, 150)}. ` +
