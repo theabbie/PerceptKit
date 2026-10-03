@@ -1,5 +1,5 @@
-// PerceptKit demo UI — thin layer over engine.js. All heavy lifting
-// (data generation, training loops) lives in the wasm module + engine.
+
+
 import init, * as wasm from "./pkg-web/percept_wasm.js";
 import {
   trainClassifier, classify, makeDigitDataset,
@@ -11,9 +11,9 @@ import {
 
 const $ = (id) => document.getElementById(id);
 
-// ---------------------------------------------------------------------------
-// tabs
-// ---------------------------------------------------------------------------
+
+
+
 document.querySelectorAll("nav button").forEach((b) => {
   b.addEventListener("click", () => {
     document.querySelectorAll("nav button").forEach((x) => x.classList.remove("active"));
@@ -23,9 +23,9 @@ document.querySelectorAll("nav button").forEach((b) => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// canvas helpers
-// ---------------------------------------------------------------------------
+
+
+
 function drawGray(canvas, img, w, h) {
   const ctx = canvas.getContext("2d");
   const id = ctx.createImageData(w, h);
@@ -49,9 +49,9 @@ function drawRGB(canvas, img, w, h) {
   ctx.putImageData(id, 0, 0);
 }
 
-// ---------------------------------------------------------------------------
-// demo 1: classifier
-// ---------------------------------------------------------------------------
+
+
+
 let clfModel = null;
 
 $("clfTrain").addEventListener("click", async () => {
@@ -81,7 +81,7 @@ $("clfTrain").addEventListener("click", async () => {
   btn.disabled = false;
 });
 
-// drawing grid
+
 const gridState = new Uint8Array(DIGIT_W * DIGIT_H);
 (function buildGrid() {
   const grid = $("digitGrid");
@@ -123,9 +123,9 @@ $("clfClear").addEventListener("click", () => {
   updateClf();
 });
 
-// ---------------------------------------------------------------------------
-// demo 2: scorer
-// ---------------------------------------------------------------------------
+
+
+
 let scModel = null;
 let scBase = null;
 const scR = rng(777);
@@ -179,9 +179,9 @@ $("scTrain").addEventListener("click", async () => {
 $("scSev").addEventListener("input", updateSc);
 $("scNew").addEventListener("click", newDoc);
 
-// ---------------------------------------------------------------------------
-// demo 3: colorizer
-// ---------------------------------------------------------------------------
+
+
+
 let colModel = null;
 const colR = rng(888);
 
@@ -220,6 +220,6 @@ $("colTrain").addEventListener("click", async () => {
 
 $("colNew").addEventListener("click", newScene);
 
-// initialize wasm module (--target web requires init())
+
 await init();
 $("clfStatus").textContent = "ready — click train.";

@@ -1,8 +1,8 @@
-// Probe viewer — renders the agent's probe output onto the live canvas.
-// The probe (LLM code) returns a dict with optional `ui` spec; the default
-// renderer shows a loss curve + per-class bars; `ui` can ask for heat maps,
-// scatter plots, or confusion tables with the probe's own data.
-// Data stays JSON-safe; the renderer operates on numbers only.
+
+
+
+
+
 
 export function renderProbe(canvas, probeOut, model, engine, wasm) {
   if (!canvas) return;
@@ -32,23 +32,23 @@ export function renderProbe(canvas, probeOut, model, engine, wasm) {
     return;
   }
   if (spec.kind === "pred" && probeOut?.scores) {
-    // model prediction bar chart from the probe's own scores
+    
     drawPredBars(ctx, probeOut, W, H);
     return;
   }
 
-  // ---------- auto fallback: pick a sane default based on probe content --
+  
   if (typeof probeOut === "object" && probeOut !== null) {
     if (Array.isArray(probeOut.losses)) { drawLossCurve(ctx, probeOut.losses, W, H); return; }
     if (Array.isArray(probeOut.values)) { drawBars(ctx, probeOut.values, W, H); return; }
     if (Array.isArray(probeOut.points)) { drawScatter(ctx, probeOut.points, W, H); return; }
     if (Array.isArray(probeOut.matrix)) { drawHeat(ctx, probeOut.matrix, W, H); return; }
     if (Array.isArray(probeOut.scores)) { drawPredBars(ctx, probeOut, W, H); return; }
-    // summary card fallback: render numbers
+    
     drawKeyValues(ctx, probeOut, W, H);
     return;
   }
-  // if the model is given, render a generic "attention/summary" graphic
+  
   if (model) { drawModelCardSafe(ctx, model, W, H); return; }
 
   ctx.fillStyle = "#a1a1aa";

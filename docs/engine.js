@@ -1,15 +1,15 @@
-// PerceptKit demo engine — pure data generation + training orchestration.
-// No DOM, no wasm loading: the wasm module namespace is passed in, so this
-// file is testable headlessly in Node and drives the browser UI alike.
-//
-// Three demos, three self-supervision patterns:
-//  1. classify: digit classifier (synthetic font digits + noise/shifts)
-//  2. score:    text-overlap scorer (render docs, corrupt, pairwise rank)
-//  3. generate: colorizer (synthetic scenes, learn gray -> color inverse)
 
-// ---------------------------------------------------------------------------
-// RNG (mulberry32, seedable, deterministic)
-// ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
 
 export function rng(seed) {
   let s = seed >>> 0;
@@ -24,11 +24,11 @@ export function rng(seed) {
 
 const yieldToUI = () => new Promise((r) => setTimeout(r, 0));
 
-// ---------------------------------------------------------------------------
-// Demo 1: digit classifier
-// ---------------------------------------------------------------------------
 
-// 5x7 font for digits 0-9. "#" = on.
+
+
+
+
 export const FONT_5X7 = [
   [".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###."],
   ["..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."],
@@ -44,26 +44,26 @@ export const FONT_5X7 = [
 
 export const DIGIT_W = 8;
 export const DIGIT_H = 10;
-export const DIGIT_PATCH = 2; // -> 4x5 grid = 20 tokens x 4 channels
+export const DIGIT_PATCH = 2; 
 
-// Render digit `d` with random shift, per-row jitter, and pixel noise
-// into an 8x10 image. Wide augmentation is free (synthetic data) and is
-// what makes the classifier generalize — small shifts underfit badly.
+
+
+
 export function genDigit(d, r) {
   const img = new Float32Array(DIGIT_W * DIGIT_H);
-  const dx = Math.floor(r() * 3) - 1; // -1..1
+  const dx = Math.floor(r() * 3) - 1; 
   const dy = Math.floor(r() * 3) - 1;
   const font = FONT_5X7[d];
   for (let fy = 0; fy < 7; fy++) {
     for (let fx = 0; fx < 5; fx++) {
       if (font[fy][fx] !== "#") continue;
-      const x = fx + 1 + dx; // font centered in 8-wide image
-      const y = fy + 1 + dy; // and 10-tall
+      const x = fx + 1 + dx; 
+      const y = fy + 1 + dy; 
       if (x < 0 || x >= DIGIT_W || y < 0 || y >= DIGIT_H) continue;
       img[y * DIGIT_W + x] = 1.0;
     }
   }
-  // salt noise, 1-5%
+  
   const noiseP = 0.01 + r() * 0.04;
   for (let i = 0; i < img.length; i++) {
     if (r() < noiseP) img[i] = 1.0 - img[i];
@@ -86,12 +86,12 @@ export function digitTokens(wasm, img) {
   return wasm.patchifyImage(img, DIGIT_W, DIGIT_H, DIGIT_PATCH, 1);
 }
 
-// Train the classifier with the dense head (10 channels, one-hot targets).
+
 export async function trainClassifier(wasm, opts, onProgress) {
   const { nPerClass = 100, epochs = 150, lr = 1e-2, seed = 1 } = opts;
   const dataset = makeDigitDataset(nPerClass, seed);
-  const T = (DIGIT_W / DIGIT_PATCH) * (DIGIT_H / DIGIT_PATCH); // 20
-  const IN = DIGIT_PATCH * DIGIT_PATCH; // 4
+  const T = (DIGIT_W / DIGIT_PATCH) * (DIGIT_H / DIGIT_PATCH); 
+  const IN = DIGIT_PATCH * DIGIT_PATCH; 
   const N = dataset.length;
 
   const model = new wasm.PerceptModelWasm(IN, 16, 2, 2, 32, 10, 32, seed);
@@ -117,7 +117,7 @@ export async function trainClassifier(wasm, opts, onProgress) {
   return { model, dataset, lastLoss: last };
 }
 
-// Classify an 8x10 image: mean over per-token one-hot outputs.
+
 export function classify(wasm, model, img) {
   const T = (DIGIT_W / DIGIT_PATCH) * (DIGIT_H / DIGIT_PATCH);
   const tokens = digitTokens(wasm, img);
@@ -130,19 +130,19 @@ export function classify(wasm, model, img) {
   return { digit: best, scores: scores.map((s) => s / T) };
 }
 
-// ---------------------------------------------------------------------------
-// Demo 2: text-overlap scorer
-// ---------------------------------------------------------------------------
+
+
+
 
 export const DOC_W = 32;
 export const DOC_H = 32;
 
-// A "document" is a set of text lines (x, y, w, h) on a 32x32 page.
-// Lines are drawn at brightness 0.6; overlapping regions clamp to 1.0, so
-// overlap both ADDS a bright blob and REMOVES ink (clamping) — a strong,
-// learnable pixel signature.
+
+
+
+
 export function genDoc(r) {
-  const nLines = 3 + Math.floor(r() * 3); // 3..5
+  const nLines = 3 + Math.floor(r() * 3); 
   const boxes = [];
   let y = 3 + Math.floor(r() * 3);
   for (let i = 0; i < nLines; i++) {
@@ -153,8 +153,8 @@ export function genDoc(r) {
   return boxes;
 }
 
-// Render boxes to a DOC_W x DOC_H image. Overlapping regions accumulate
-// brightness (clamped), so overlap is encoded in pixels.
+
+
 export function renderDoc(boxes) {
   const img = new Float32Array(DOC_W * DOC_H);
   for (const [bx, by, bw, bh] of boxes) {
@@ -169,30 +169,30 @@ export function renderDoc(boxes) {
   return img;
 }
 
-// Corrupt a doc's boxes: shift one line into another (overlap).
+
 export function corruptDoc(boxes, severity, r) {
   if (boxes.length < 2) return boxes.map((b) => [...b]);
   const out = boxes.map((b) => [...b]);
   const i = Math.floor(r() * out.length);
   let j = Math.floor(r() * out.length);
   while (j === i) j = Math.floor(r() * out.length);
-  // move line i toward line j proportionally to severity — at high
-  // severity the lines overlap substantially.
-  // BUG FIX: keep coordinates INTEGRAL. Fractional y made renderDoc's
-  // pixel loop write to fractional Float32Array indices, which JS
-  // silently drops — the corrupted line vanished from the render and
-  // mild/severe images were identical. (Classic silent-failure foot-gun.)
+  
+  
+  
+  
+  
+  
   const dy = (out[j][1] - out[i][1]) * severity;
   out[i][1] = Math.round(out[i][1] + dy * 0.85 + severity * 1.5);
   return out;
 }
 
-export const DOC_PATCH = 4; // -> 8x8 grid = 64 tokens x 16 channels
-export const DOC_T = (DOC_W / DOC_PATCH) * (DOC_H / DOC_PATCH); // 64
-export const DOC_IN = DOC_PATCH * DOC_PATCH; // 16
+export const DOC_PATCH = 4; 
+export const DOC_T = (DOC_W / DOC_PATCH) * (DOC_H / DOC_PATCH); 
+export const DOC_IN = DOC_PATCH * DOC_PATCH; 
 
-// Pairwise training: same base doc, mild vs severe corruption.
-// (Ranking, not absolute regression — see README data-design lesson.)
+
+
 export async function trainOverlapScorer(wasm, opts, onProgress) {
   const { nPairs = 120, epochs = 30, seed = 2 } = opts;
   const r = rng(seed);
@@ -231,15 +231,15 @@ export function docScore(wasm, model, img) {
     wasm.patchifyImage(img, DOC_W, DOC_H, DOC_PATCH, 1), DOC_T);
 }
 
-// ---------------------------------------------------------------------------
-// Demo 3: colorizer
-// ---------------------------------------------------------------------------
+
+
+
 
 export const SCENE_W = 32;
 export const SCENE_H = 32;
-export const SCENE_PATCH = 4; // -> 8x8 grid = 64 tokens x 48 channels
+export const SCENE_PATCH = 4; 
 
-// Synthetic color scenes: sky gradient, sun, hills, water.
+
 export function genScene(r) {
   const img = new Float32Array(SCENE_W * SCENE_H * 3);
   const horizon = 12 + Math.floor(r() * 8);
@@ -252,30 +252,30 @@ export function genScene(r) {
       const i = (y * SCENE_W + x) * 3;
       let cr, cg, cb;
       if (y < horizon) {
-        // sky gradient: blue, brighter near horizon
+        
         const t = y / horizon;
         cr = 0.5 + 0.3 * t;
         cg = 0.7 + 0.2 * t;
         cb = 0.9;
       } else if (water && y > SCENE_H - 8) {
-        // water: dark blue with horizontal streaks
+        
         cr = 0.15;
         cg = 0.3 + 0.1 * ((x + y) % 4 === 0 ? 1 : 0);
         cb = 0.55;
       } else {
-        // hills: green
+        
         const t = (y - horizon) / (SCENE_H - horizon);
         cr = 0.2 * t;
         cg = 0.5 - 0.2 * t;
         cb = 0.15 * t;
       }
-      // sun disc
+      
       const dx = x - sunX;
       const dy = y - sunY;
       if (dx * dx + dy * dy < 9) {
         cr = 1.0; cg = 0.85; cb = 0.3;
       }
-      // hill silhouette bump
+      
       const hx = (x - SCENE_W / 2) / SCENE_W;
       if (y >= horizon && y < horizon + hillH * (1 - Math.abs(hx) * 2) && !water) {
         cr = 0.1; cg = 0.35; cb = 0.1;
@@ -292,14 +292,14 @@ export function sceneGray(wasm, img) {
   return wasm.toGrayscale(img, SCENE_W, SCENE_H);
 }
 
-// Train: input = gray tokens (1 channel), target = RGB (3 channels out).
+
 export async function trainColorizer(wasm, opts, onProgress) {
   const { nScenes = 150, epochs = 40, seed = 3 } = opts;
   const r = rng(seed);
-  const T = (SCENE_W / SCENE_PATCH) * (SCENE_H / SCENE_PATCH); // 64
-  const IN = SCENE_PATCH * SCENE_PATCH; // 16
-  // out_channels = 3 * patch^2: the dense head predicts the FULL RGB
-  // patch per gray token (48 channels), which unpatchifyImage reassembles.
+  const T = (SCENE_W / SCENE_PATCH) * (SCENE_H / SCENE_PATCH); 
+  const IN = SCENE_PATCH * SCENE_PATCH; 
+  
+  
   const model = new wasm.PerceptModelWasm(IN, 16, 2, 2, 32, 3 * SCENE_PATCH * SCENE_PATCH, T, seed);
   const trainer = new wasm.TrainerWasm(5e-3, 16, seed);
 
@@ -328,10 +328,10 @@ export async function trainColorizer(wasm, opts, onProgress) {
   return { model, lastLoss: last };
 }
 
-// Colorize a gray image: tokens in, RGB image out.
+
 export function colorize(wasm, model, gray) {
   const T = (SCENE_W / SCENE_PATCH) * (SCENE_H / SCENE_PATCH);
   const tokens = wasm.patchifyImage(gray, SCENE_W, SCENE_H, SCENE_PATCH, 1);
-  const out = model.transform(tokens, T); // (T, 3*16)
+  const out = model.transform(tokens, T); 
   return wasm.unpatchifyImage(out, SCENE_W, SCENE_H, SCENE_PATCH, 3);
 }

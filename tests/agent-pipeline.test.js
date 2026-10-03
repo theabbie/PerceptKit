@@ -1,15 +1,15 @@
-// Headless test of the agent pipeline (agent-core.js runPipeline):
-// the LLM-planned path must actually train, hit held-out accuracy, and
-// produce exportable .pkm bytes — without any LLM call.
-// Run: node tests/agent-pipeline.test.js
+
+
+
+
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const wasm = require("../pkg/percept_wasm.js");
 
-// agent-core.js is ESM; runPipeline is exported. Load it via dynamic import.
-// (node 22 supports import() of ESM from CJS)
+
+
 async function loadAgentCore() {
   const core = await import(pathToFileURL("../docs/agent-core.js"));
   return core;
@@ -23,11 +23,11 @@ async function main() {
   const { runPipeline } = await loadAgentCore();
   const engine = await import(pathToFileURL("../docs/engine.js"));
 
-  // ---------------------------------------------------------------
-  // case 1: dense_mse — LLM-style corruptor (salt noise + row shift)
-  // on digit data. This is the exact shape of code write_corruptor
-  // accepts: function(sample, severity, rng, label)
-  // ---------------------------------------------------------------
+  
+  
+  
+  
+  
   console.log("case 1: dense_mse with agent-written corruptor...");
   const corruptorSrc = `
     function (sample, severity, rng, label) {
@@ -53,7 +53,7 @@ async function main() {
       return out;
     }
   `;
-  // compile the same way write_corruptor does
+  
   const corruptor = new Function("return (" + corruptorSrc.trim() + ")")();
 
   const logs = [];
@@ -64,7 +64,7 @@ async function main() {
     corruptors: ["noise+shift"],
     _corruptor: corruptor,
     _probe: ({ model, wasm, engine, rng }) => {
-      // probe contract: returns JSON-serializable result
+      
       const img = engine.genDigit(7, rng);
       const tokens = wasm.patchifyImage(img, 8, 10, 2, 1);
       const T = 20;
@@ -88,7 +88,7 @@ async function main() {
   console.log(`  done in ${Date.now() - t0}ms, held-out acc ${acc1}%`);
   assert.ok(acc1 > 60, `dense held-out accuracy too low: ${acc1}`);
 
-  // export round-trip: save -> bytes -> load -> same prediction
+  
   const bytes = res1.model.save();
   console.log(`  .pkm export: ${bytes.length} bytes, ${res1.model.nParams()} params`);
   assert.ok(bytes.length > 1000, "suspiciously small model file");
@@ -103,9 +103,9 @@ async function main() {
   console.log("  save/load round-trip: identical predictions");
   assert.ok(res1.probe && res1.probe.predicted !== undefined, "probe did not run");
 
-  // ---------------------------------------------------------------
-  // case 2: score_pair — agent corruptor on docs (layout overlap)
-  // ---------------------------------------------------------------
+  
+  
+  
   console.log("case 2: score_pair with agent-written corruptor...");
   logs.length = 0;
   const docCorruptor = new Function("return (" + `

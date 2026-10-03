@@ -1,5 +1,5 @@
-// Headless test of the demo engine: all three demos must actually LEARN.
-// Run: node tests/demo-engine.test.js
+
+
 const assert = require("assert");
 const wasm = require("../pkg/percept_wasm.js");
 const {
@@ -10,16 +10,16 @@ const {
 } = require("../docs/engine.js");
 
 async function main() {
-  // ---- demo 1: digit classifier ----
+  
   console.log("training digit classifier...");
   const t1 = Date.now();
-  // tuned config: lr 1e-2, 100/class, 150 epochs -> ~94% held-out
+  
   const { model: clf, lastLoss: clfLoss } = await trainClassifier(wasm, {
     nPerClass: 100, epochs: 150, lr: 1e-2, seed: 1,
   });
   console.log(`  done in ${Date.now() - t1}ms, final loss ${clfLoss.toFixed(4)}`);
 
-  // held-out accuracy with a DIFFERENT seed than training
+  
   const testSet = makeDigitDataset(10, 999);
   let correct = 0;
   const perClass = new Array(10).fill(0);
