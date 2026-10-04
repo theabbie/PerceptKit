@@ -11,7 +11,7 @@
 
 
 import { Agent } from "@earendil-works/pi-agent-core";
-import * as kit from "./kit/synth.js?v=1.5";
+import * as kit from "./kit/synth.js?v=1.6";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 
 const API_ENDPOINT = "https://webiome.abbie.workers.dev/api/stream";
@@ -636,7 +636,7 @@ export class PerceptKitAgent {
       {
         name: "write_corruptor",
         label: "Write corruptor",
-        description: "Write the corruption function source. Contract: function(sample, severity, rng, label, kit) -> corrupted sample, SAME shape as input. rng() is uniform [0,1). kit has image helpers (noise, gauss, translate, rotate, occlude, dropout, clamp01...) — use them instead of raw pixel loops. IMPORTANT: severity must degrade the CONCEPT, never placement — translate/rotate/scale are NOT defects, the trainer already applies those to both sides equally (a shifted circle is still a perfect circle). severity~0 = near-perfect sample. severity~1 = the sample barely belongs to its class: for shapes, DEFORM THE SHAPE itself (radius wobble, broken/flattened arcs, collapse toward a blob or line), not just pixel noise. If high severity only adds noise/gaps, degenerate inputs (a dot, a blob, a single line) will score as "clean" because they have no texture damage.",
+        description: "Write the corruption function source. Contract: function(sample, severity, rng, label, kit) -> corrupted sample, SAME shape as input. rng() is uniform [0,1). kit has image helpers (noise, gauss, translate, rotate, occlude, dropout, clamp01...) — use them instead of raw pixel loops. IMPORTANT: severity must degrade the CONCEPT, never placement — translate/rotate/scale are NOT defects, the trainer already applies those to both sides equally (a shifted circle is still a perfect circle). severity~0 = near-perfect sample. severity~1 = the sample barely belongs to its class: for shapes, DEFORM THE SHAPE itself (radius wobble, broken/flattened arcs, collapse toward a blob or line), not just pixel noise. If high severity only adds noise/gaps, degenerate inputs (a dot, a blob, a single line) will score as 'clean' because they have no texture damage.",
         parameters: Type.Object({
           name: Type.String({ description: "Corruptor name (from the plan)" }),
           code: Type.String({ description: "Function source, e.g. 'function(sample, severity, rng, label) { ... return out; }'" }),
