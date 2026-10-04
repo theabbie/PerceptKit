@@ -11,7 +11,7 @@
 
 
 import { Agent } from "@earendil-works/pi-agent-core";
-import * as kit from "./kit/synth.js?v=1.2";
+import * as kit from "./kit/synth.js?v=1.3";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 
 const API_ENDPOINT = "https://webiome.abbie.workers.dev/api/stream";
@@ -619,7 +619,12 @@ export class PerceptKitAgent {
           const r = self.engine.rng(42);
           const plan = self.state.plan || {};
           const gen = plan.gen || ((rng2, label) => self.engine.genDigit(label ?? 0, rng2));
-          const sample = gen(r, 0, kit);
+          let sample;
+          try { sample = gen(r, 0, kit); }
+          catch (err) {
+            throw new Error("gen crashed in smoke test: " + String(err).slice(0, 150) +
+              " — if gen uses kit helpers, declare the kit parameter: function(rng, label, kit)");
+          }
           let out;
           try { out = fn(sample, 0.5, r, 0, kit); }
           catch (err) { throw withStack(err, "corruptor smoke test"); }
