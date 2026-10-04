@@ -11,7 +11,7 @@
 
 
 import { Agent } from "@earendil-works/pi-agent-core";
-import * as kit from "./kit/synth.js?v=1.3";
+import * as kit from "./kit/synth.js?v=1.4";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 
 const API_ENDPOINT = "https://webiome.abbie.workers.dev/api/stream";
@@ -91,6 +91,13 @@ export async function runPipeline(wasm, engine, plan, ui) {
       return engine.renderDoc(x);
     });
     const toImg = (x) => (ArrayBuffer.isView(x) ? x : render(x, kit));
+    const augment = (img, rr) => {
+      let out = img;
+      out = kit.translate(out, W, H, (rr() - 0.5) * W * 0.4, (rr() - 0.5) * H * 0.4);
+      out = kit.rotate(out, W, H, (rr() - 0.5) * 40);
+      out = kit.scaleImg(out, W, H, 0.8 + rr() * 0.4);
+      return out;
+    };
 
     const betterFlat = new Float32Array(nPairs * T * IN);
     const worseFlat = new Float32Array(nPairs * T * IN);
@@ -123,9 +130,9 @@ export async function runPipeline(wasm, engine, plan, ui) {
           `Fix the corruptor or render to return a Float32Array of ${W * H} floats.`);
       }
       betterFlat.set(
-        wasm.patchifyImage(toImg(mild), W, H, PATCH, 1), p * T * IN);
+        wasm.patchifyImage(augment(toImg(mild), r), W, H, PATCH, 1), p * T * IN);
       worseFlat.set(
-        wasm.patchifyImage(toImg(severe), W, H, PATCH, 1), p * T * IN);
+        wasm.patchifyImage(augment(toImg(severe), r), W, H, PATCH, 1), p * T * IN);
     }
     viz({ type: "update", stage: "data", message: `building ${nPairs} pairwise samples` });
     log(`data: ${nPairs} pairs (mild vs severe), ${T} tokens/seq`);
@@ -151,8 +158,8 @@ export async function runPipeline(wasm, engine, plan, ui) {
     let heldOk = 0, heldN = 0;
     for (let p = 0; p < 40; p++) {
       const sample = base(r2, 0, kit);
-      const clean = wasm.patchifyImage(toImg(sample), W, H, PATCH, 1);
-      const bad = wasm.patchifyImage(toImg(corruptor(sample, 0.8, r2, 0, kit)), W, H, PATCH, 1);
+      const clean = wasm.patchifyImage(augment(toImg(sample), r2), W, H, PATCH, 1);
+      const bad = wasm.patchifyImage(augment(toImg(corruptor(sample, 0.8, r2, 0, kit)), r2), W, H, PATCH, 1);
       heldN++;
       if (model.score(clean, T) > model.score(bad, T)) heldOk++;
     }
@@ -388,6 +395,12 @@ export class PerceptKitAgent {
       "4. run_pipeline — trains for real with the wasm trainer, iterating up",
       "   to plan.max_iterations rounds with adversarial mining, and returns",
       "   losses, held-out accuracy (best round), and probe output.",
+      "4.5 write_demo (only when the goal needs interaction the DrawPad",
+      "   cannot express: dragging objects, clicking, multiple shapes,",
+      "   animation). function mount(container, ctx) with ctx = {p5, model,",
+      "   wasm, engine, kit, W, H, infer(img), corruptor, render}. p5.js is",
+      "   loaded: new ctx.p5((p) => { p.setup = ...; p.draw = ...; },",
+      "   container).",
       "5. export_model — serializes the trained model to .pkm bytes.",
       "",
       "Data-design rules (non-negotiable):",
@@ -546,6 +559,8 @@ export class PerceptKitAgent {
       details: details ?? {},
     });
 
+    const errHist = {};
+    const isBlocked = (msg) => /no corruptor|no trained model|call write_|run run_pipeline first|call plan_label_set first/i.test(msg);
     const wrap = (t) => {
       const exec = t.execute;
       t.execute = async (id, args) => {
@@ -553,10 +568,24 @@ export class PerceptKitAgent {
         try {
           const r = await exec(id, args);
           const txt = r?.content?.[0]?.text ?? "";
-          self.ui?.toolEnd?.(t.name, true, txt.slice(0, 160));
+          self.ui?.toolEnd?.(t.name, "ok", txt.slice(0, 160));
+          errHist[t.name] = null;
           return r;
         } catch (e) {
-          self.ui?.toolEnd?.(t.name, false, String(e?.message || e).slice(0, 160));
+          const msg = String(e?.message || e);
+          const blocked = isBlocked(msg);
+          self.ui?.toolEnd?.(t.name, blocked ? "blocked" : "error", msg.slice(0, 160));
+          if (!blocked) {
+            const prev = errHist[t.name];
+            errHist[t.name] = { msg, n: prev && prev.msg === msg ? prev.n + 1 : 1 };
+            const { n } = errHist[t.name];
+            if (n >= 2) {
+              const replanned = new Error(msg.slice(0, 140) +
+                "\nThis exact error has occurred " + (n + 1) + " times. STOP guessing. Call plan_label_set again with a revised plan — simplify: fewer corruptors, use only kit helpers you know exist, verify every function you call is in the kit docs. Then write the code fresh.");
+              replanned.replan = true;
+              throw replanned;
+            }
+          }
           throw e;
         }
       };
@@ -607,7 +636,7 @@ export class PerceptKitAgent {
       {
         name: "write_corruptor",
         label: "Write corruptor",
-        description: "Write the corruption function source. Contract: function(sample, severity, rng, label, kit) -> corrupted sample, SAME shape as input. rng() is uniform [0,1). kit has image helpers (noise, gauss, translate, rotate, occlude, dropout, clamp01...) — use them instead of raw pixel loops.",
+        description: "Write the corruption function source. Contract: function(sample, severity, rng, label, kit) -> corrupted sample, SAME shape as input. rng() is uniform [0,1). kit has image helpers (noise, gauss, translate, rotate, occlude, dropout, clamp01...) — use them instead of raw pixel loops. IMPORTANT: severity must degrade QUALITY (wobble, gaps, breaks, occlusion, noise), never placement — translate/rotate/scale are NOT defects, the trainer already applies those to both sides equally. A shifted circle is still a perfect circle.",
         parameters: Type.Object({
           name: Type.String({ description: "Corruptor name (from the plan)" }),
           code: Type.String({ description: "Function source, e.g. 'function(sample, severity, rng, label) { ... return out; }'" }),
@@ -723,6 +752,37 @@ export class PerceptKitAgent {
           if (!self.state.plan) throw new Error("no plan — call plan_label_set first");
           self.state.plan._uiSpec = { kind: args.kind, field: args.field };
           return ok(`UI spec set to ${args.kind}; probe-driven render active.`, { kind: args.kind });
+        },
+      },
+      {
+        name: "write_demo",
+        label: "Custom demo",
+        description: "Replace the default draw-and-score demo with a custom interactive demo. Use this when the goal involves interaction the DrawPad cannot express: dragging objects, clicking, multiple shapes, animation, sliders, game-like input. Code must export a mount function: function mount(container, ctx). ctx has: p5 (p5.js constructor), model, wasm, engine, kit, W, H (model input size), infer(imgF32orBytes) -> {score} or {label, norm}, corruptor, render. You get an empty container div; mount whatever DOM/canvas you want. p5 sketch style: new ctx.p5((p) => { p.setup = ...; }, container).",
+        parameters: Type.Object({
+          code: Type.String({ description: "Source with function mount(container, ctx) { ... }" }),
+        }),
+        execute: async (_toolCallId, args) => {
+          if (!self.state.plan) throw new Error("no plan — call plan_label_set first");
+          let fn;
+          try { fn = compileFn(args.code, "demo.js"); }
+          catch (err) { throw new Error("compile failed: " + String(err).slice(0, 150)); }
+          if (typeof fn !== "function") throw new Error("demo.js must evaluate to a mount(container, ctx) function");
+          if (typeof document !== "undefined") {
+            const probe = document.createElement("div");
+            probe.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:200px;height:200px";
+            document.body.appendChild(probe);
+            try {
+              const stub = { p5: window.p5, model: self.state.result?.model ?? null, wasm: self.pkg, engine: self.engine, kit, W: self.engine.DOC_W, H: self.engine.DOC_H, infer: () => ({}), corruptor: self.state.plan?._corruptor ?? null, render: self.state.plan?.render ?? null };
+              fn(probe, stub);
+            } catch (err) {
+              throw new Error("demo mount smoke test crashed: " + String(err).slice(0, 200));
+            } finally {
+              probe.remove();
+            }
+          }
+          self.vfs.write("demo.js", args.code);
+          self.state.plan._demo = fn;
+          return ok("Custom demo written. It will mount in the Demo lane once a model is trained.", {});
         },
       },
       {

@@ -47,6 +47,7 @@
   .card.running { border-left-color:var(--warn); }
   .card.ok { border-left-color:var(--good); }
   .card.error { border-left-color:var(--bad); }
+  .card.blocked { border-left-color:#d97706; }
   .card-head { display:flex; justify-content:space-between; align-items:center; gap:8px; }
   .card-name { font-family:ui-monospace,monospace; font-size:12px; color:var(--fg); }
   .chip { font-size:10px; padding:1px 8px; border-radius:999px; font-weight:600;
@@ -54,10 +55,12 @@
   .chip.running { background:#3b2f0b; color:var(--warn); animation:pulse 1.2s infinite; }
   .chip.ok { background:#052e16; color:var(--good); }
   .chip.error { background:#450a0a; color:var(--bad); }
+  .chip.blocked { background:#451a03; color:#fbbf24; }
   @keyframes pulse { 50% { opacity:.55; } }
   .card-detail { margin-top:5px; color:var(--dim); font-family:ui-monospace,monospace;
     font-size:11px; line-height:1.5; word-break:break-word; white-space:pre-wrap; }
   .card.error .card-detail { color:#fca5a5; }
+  .card.blocked .card-detail { color:#fcd34d; }
   .card canvas { width:100%; background:#000; border:1px solid var(--edge); border-radius:6px; margin-top:6px; }
   .ag-download { display:inline-flex; align-items:center; gap:6px; background:#052e16; color:#bbf7d0;
     border:1px solid #166534; padding:6px 14px; border-radius:8px; text-decoration:none;
@@ -140,6 +143,7 @@
     <div class="report-pane" id="agLog"></div>
   </details>
 </div>
-<script type="module" src="./agent-ui.js?v=1.3"></script>
+<script src="./vendor/p5.min.js"></script>
+<script type="module" src="./agent-ui.js?v=1.4"></script>
 </body>
 </html>

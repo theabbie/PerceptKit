@@ -1,9 +1,10 @@
-import init, * as pkg from "./pkg-web/percept_wasm.js?v=1.3";
-import * as engine from "./engine.js?v=1.3";
-import { PerceptKitAgent } from "./agent-core.js?v=1.3";
-import { renderProbe } from "./probe-ui.js?v=1.3";
-import { mountDemo } from "./demo-ui.js?v=1.3";
-import * as viz from "./kit/viz.js?v=1.3";
+import init, * as pkg from "./pkg-web/percept_wasm.js?v=1.4";
+import * as engine from "./engine.js?v=1.4";
+import { PerceptKitAgent } from "./agent-core.js?v=1.4";
+import { renderProbe } from "./probe-ui.js?v=1.4";
+import { mountDemo, demoInfer } from "./demo-ui.js?v=1.4";
+import * as kit from "./kit/synth.js?v=1.4";
+import * as viz from "./kit/viz.js?v=1.4";
 
 const $ = (id) => document.getElementById(id);
 
@@ -27,6 +28,7 @@ const LANE_OF = {
   list_vfs: "code",
   run_pipeline: "train",
   ui_spec: "eval",
+  write_demo: "code",
   export_model: "export",
 };
 
@@ -81,11 +83,11 @@ function addCard(lane, name) {
 }
 
 function setCard(el, state, detail) {
-  el.classList.remove("running", "ok", "error");
+  el.classList.remove("running", "ok", "error", "blocked");
   el.classList.add(state);
   const chip = el.querySelector(".chip");
   chip.className = "chip " + state;
-  chip.textContent = state === "ok" ? "done" : state;
+  chip.textContent = state === "ok" ? "done" : state === "blocked" ? "blocked" : state;
   if (detail != null) el.querySelector(".card-detail").textContent = detail;
 }
 
@@ -119,15 +121,15 @@ async function build() {
         if (name === "run_pipeline") runCards.train = card;
         status(`running ${name}…`);
       },
-      toolEnd: (name, ok, summary) => {
+      toolEnd: (name, result, summary) => {
         const lane = LANE_OF[name] || "code";
         const cards = $("body-" + lane).querySelectorAll(".card");
         let card = null;
         for (const c of cards) {
           if (c.querySelector(".card-name").textContent === name && c.classList.contains("running")) card = c;
         }
-        if (card) setCard(card, ok ? "ok" : "error", summary || "");
-        status(ok ? `${name} done` : `${name} failed`);
+        if (card) setCard(card, result, summary || "");
+        status(result === "ok" ? `${name} done` : result === "blocked" ? `${name} waiting on earlier step` : `${name} failed`);
       },
       viz: (event) => {
         try {
@@ -165,10 +167,29 @@ function tryMountDemo(g, model, demoSpec) {
   if (!body || !model || !demoSpec) return;
   body.querySelector(".lane-empty")?.remove();
   try {
-    demoHandle = mountDemo({
-      container: body, model, wasm: pkg, spec: demoSpec, engine,
-      corruptor: g.state.plan?._corruptor ?? null,
-    });
+    const custom = g.state.plan?._demo;
+    if (custom) {
+      const infer = (img) => {
+        const f32 = ArrayBuffer.isView(img) && img instanceof Uint8Array ? null : img;
+        let px = img;
+        if (!(img instanceof Uint8Array)) {
+          px = new Uint8Array(img.length);
+          let mx = 1;
+          for (let i = 0; i < img.length; i++) mx = Math.max(mx, img[i]);
+          const s = mx <= 1.5 ? 255 : 1;
+          for (let i = 0; i < img.length; i++) px[i] = Math.round(img[i] * s);
+        }
+        return demoInfer(px, model, pkg, demoSpec, { scoreMin: Infinity, scoreMax: -Infinity });
+      };
+      const ctx = { p5: window.p5, model, wasm: pkg, engine, kit, W: demoSpec.W, H: demoSpec.H, infer, corruptor: g.state.plan?._corruptor ?? null, render: g.state.plan?.render ?? null };
+      demoHandle = { inferNow: () => {} };
+      custom(body, ctx);
+    } else {
+      demoHandle = mountDemo({
+        container: body, model, wasm: pkg, spec: demoSpec, engine,
+        corruptor: g.state.plan?._corruptor ?? null,
+      });
+    }
     window.__demo = demoHandle;
     $("cnt-demo").textContent = "live";
   } catch (err) {

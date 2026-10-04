@@ -141,6 +141,51 @@ async function main() {
   console.log(`  done in ${Date.now() - t1}ms, held-out clean>corrupt ${held}%`);
   assert.ok(held > 85, `pair held-out too low: ${held}`);
 
+  console.log("case 3: placement-only corruptor must not become the signal (augment invariance)...");
+  logs.length = 0;
+  const kitMod = await import(pathToFileURL("../docs/kit/synth.js"));
+  const W3 = 32, H3 = 32;
+  const gen3 = new Function("kit", `return function(rng, label) {
+    const img = new Float32Array(${W3} * ${H3});
+    kit.circle(img, ${W3}, ${H3}, 16, 16, 9, { stroke: 1, w: 1.5, soft: 0.4 });
+    return img;
+  };`)(kitMod);
+  const placeOnly = new Function("kit", `return function(sample, severity, rng, label) {
+    let out = kit.translate(sample, ${W3}, ${H3}, (rng() - 0.5) * 6 * severity, (rng() - 0.5) * 6 * severity);
+    if (severity > 0.3) out = kit.rotate(out, ${W3}, ${H3}, (rng() - 0.5) * 30 * severity);
+    return out;
+  };`)(kitMod);
+  const plan3 = {
+    goal: "score circle quality (placement-invariance regression)",
+    labels: ["quality"],
+    training_kind: "score_pair",
+    corruptors: ["place-only"],
+    gen: gen3,
+    _corruptor: placeOnly,
+    n_pairs: 60,
+    epochs: 12,
+    seed: 9,
+  };
+  const res3 = await runPipeline(wasm, engine, plan3, { log: (t) => logs.push(t), progress: () => {} });
+  const held3 = parseFloat(res3.metrics.find((mm) => mm.label === "held-out clean>corrupt").value);
+  console.log("  placement-only corruptor held-out clean>corrupt: " + held3 + "% (without augment this is ~100%)");
+  assert.ok(held3 < 85, "placement-only corruptor leaked too strongly: held-out " + held3 + "% (augment should suppress placement signal toward chance)");
+
+  console.log("case 4: quality-degrading corruptor still learns under augmentation...");
+  logs.length = 0;
+  const wobble = new Function("kit", `return function(sample, severity, rng, label) {
+    let out = new Float32Array(sample);
+    out = kit.gauss(out, rng, 0.25 * severity);
+    out = kit.dropout(out, rng, 0.12 * severity);
+    if (rng() < severity) out = kit.occlude(out, ${W3}, ${H3}, 6 + rng() * 16, 6 + rng() * 16, 3 + rng() * 5, 3 + rng() * 5, 0);
+    return kit.clamp01(out);
+  };`)(kitMod);
+  const plan4 = { ...plan3, goal: "score circle quality (wobble learns)", _corruptor: wobble, corruptors: ["wobble"] };
+  const res4 = await runPipeline(wasm, engine, plan4, { log: (t) => logs.push(t), progress: () => {} });
+  const held4v = parseFloat(res4.metrics.find((mm) => mm.label === "held-out clean>corrupt").value);
+  console.log("  wobble corruptor held-out clean>corrupt: " + held4v + "%");
+  assert.ok(held4v > 85, "quality corruptor failed to learn under augmentation: held-out " + held4v + "%");
+
   console.log("\nALL AGENT PIPELINE TESTS PASSED");
 }
 

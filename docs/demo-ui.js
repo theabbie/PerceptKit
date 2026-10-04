@@ -1,5 +1,5 @@
-import { DrawPad } from "./kit/canvas.js?v=1.3";
-import * as viz from "./kit/viz.js?v=1.3";
+import { DrawPad } from "./kit/canvas.js?v=1.4";
+import * as viz from "./kit/viz.js?v=1.4";
 
 export function demoInfer(px, model, wasm, spec, session) {
   let min = 255, max = 0;
@@ -62,7 +62,7 @@ export function mountDemo({ container, model, wasm, spec, engine, corruptor }) {
 
   const controls = document.createElement("div");
   controls.style.cssText = "display:flex;gap:18px;align-items:center;margin:8px 0;flex-wrap:wrap";
-  const strokeCtl = slider("stroke", 0.5, 4, 0.5, 1.5);
+  const strokeCtl = slider("stroke", 0.8, 4, 0.2, 1.5);
   controls.append(strokeCtl.wrap);
   let sevCtl = null;
   if (spec.kind === "score" && corruptor) {
@@ -75,6 +75,13 @@ export function mountDemo({ container, model, wasm, spec, engine, corruptor }) {
   const canvas = document.createElement("canvas");
   canvas.style.cssText = "width:100%;background:#000;border:1px solid var(--edge,#27272a);border-radius:6px;cursor:crosshair";
   const right = document.createElement("div");
+  const viewLabel = document.createElement("div");
+  viewLabel.className = "ag-report-label";
+  viewLabel.textContent = "model\u2019s view";
+  const viewBox = document.createElement("canvas");
+  viewBox.width = spec.W;
+  viewBox.height = spec.H;
+  viewBox.style.cssText = "width:96px;image-rendering:pixelated;background:#000;border:1px solid var(--edge,#27272a);border-radius:4px;margin-bottom:8px";
   const out = document.createElement("div");
   out.className = "ag-stats";
   out.textContent = "draw with mouse / finger";
@@ -86,7 +93,7 @@ export function mountDemo({ container, model, wasm, spec, engine, corruptor }) {
   cmpBox.style.cssText = "width:100%;display:none;margin-top:10px";
   const cmpOut = document.createElement("div");
   cmpOut.className = "ag-stats";
-  right.append(out, barBox, gaugeBox, cmpBox, cmpOut);
+  right.append(viewLabel, viewBox, out, barBox, gaugeBox, cmpBox, cmpOut);
   row.append(canvas, right);
   container.append(head, controls, row);
 
@@ -103,6 +110,7 @@ export function mountDemo({ container, model, wasm, spec, engine, corruptor }) {
 
   const run = () => {
     const f32 = pad.pixels();
+    viz.imgToCanvas({ img: f32, w: spec.W, h: spec.H }, viewBox);
     const px = new Uint8Array(f32.length);
     for (let i = 0; i < f32.length; i++) px[i] = Math.round(f32[i] * 255);
     const res = demoInfer(px, model, wasm, spec, session);
