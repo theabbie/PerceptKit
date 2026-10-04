@@ -1,10 +1,10 @@
-import init, * as pkg from "./pkg-web/percept_wasm.js?v=1.6";
-import * as engine from "./engine.js?v=1.6";
-import { PerceptKitAgent } from "./agent-core.js?v=1.6";
-import { renderProbe } from "./probe-ui.js?v=1.6";
-import { mountDemo, demoInfer } from "./demo-ui.js?v=1.6";
-import * as kit from "./kit/synth.js?v=1.6";
-import * as viz from "./kit/viz.js?v=1.6";
+import init, * as pkg from "./pkg-web/percept_wasm.js?v=1.7";
+import * as engine from "./engine.js?v=1.7";
+import { PerceptKitAgent } from "./agent-core.js?v=1.7";
+import { renderProbe } from "./probe-ui.js?v=1.7";
+import { mountDemo, demoInfer } from "./demo-ui.js?v=1.7";
+import * as kit from "./kit/synth.js?v=1.7";
+import * as viz from "./kit/viz.js?v=1.7";
 
 const $ = (id) => document.getElementById(id);
 

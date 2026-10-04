@@ -11,7 +11,7 @@
 
 
 import { Agent } from "@earendil-works/pi-agent-core";
-import * as kit from "./kit/synth.js?v=1.6";
+import * as kit from "./kit/synth.js?v=1.7";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 
 const API_ENDPOINT = "https://webiome.abbie.workers.dev/api/stream";
@@ -400,7 +400,9 @@ export class PerceptKitAgent {
       "   animation). function mount(container, ctx) with ctx = {p5, model,",
       "   wasm, engine, kit, W, H, infer(img), corruptor, render}. p5.js is",
       "   loaded: new ctx.p5((p) => { p.setup = ...; p.draw = ...; },",
-      "   container).",
+      "   container). The verdict MUST come from ctx.infer(scene) —",
+      "   rasterize the scene to a W x H Float32Array and ask the model;",
+      "   never recompute the answer with your own geometry.",
       "5. export_model — serializes the trained model to .pkm bytes.",
       "",
       "Data-design rules (non-negotiable):",
@@ -757,7 +759,7 @@ export class PerceptKitAgent {
       {
         name: "write_demo",
         label: "Custom demo",
-        description: "Replace the default draw-and-score demo with a custom interactive demo. Use this when the goal involves interaction the DrawPad cannot express: dragging objects, clicking, multiple shapes, animation, sliders, game-like input. Code must export a mount function: function mount(container, ctx). ctx has: p5 (p5.js constructor), model, wasm, engine, kit, W, H (model input size), infer(imgF32orBytes) -> {score} or {label, norm}, corruptor, render. You get an empty container div; mount whatever DOM/canvas you want. p5 sketch style: new ctx.p5((p) => { p.setup = ...; }, container).",
+        description: "Replace the default draw-and-score demo with a custom interactive demo. Use this when the goal involves interaction the DrawPad cannot express: dragging objects, clicking, multiple shapes, animation, sliders, game-like input. Code must export a mount function: function mount(container, ctx). ctx has: p5 (p5.js constructor), model, wasm, engine, kit, W, H (model input size), infer(imgF32orBytes) -> {score} or {label, norm, empty}, corruptor, render. You get an empty container div; mount whatever DOM/canvas you want. The verdict MUST come from ctx.infer(rasterized scene) — never recompute the answer with your own geometry; the demo exists to demonstrate the model. p5 sketch style: new ctx.p5((p) => { p.setup = ...; }, container).",
         parameters: Type.Object({
           code: Type.String({ description: "Source with function mount(container, ctx) { ... }" }),
         }),
@@ -767,6 +769,9 @@ export class PerceptKitAgent {
           try { fn = compileFn(args.code, "demo.js"); }
           catch (err) { throw new Error("compile failed: " + String(err).slice(0, 150)); }
           if (typeof fn !== "function") throw new Error("demo.js must evaluate to a mount(container, ctx) function");
+          if (!/\binfer\s*\(/.test(args.code)) {
+            throw new Error("demo never calls ctx.infer(...) — the verdict must come from the trained model, not your own geometry. Rasterize the current scene to a Float32Array (W x H, 0..1) and call ctx.infer(img), then display what the model says.");
+          }
           if (typeof document !== "undefined") {
             const probe = document.createElement("div");
             probe.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:200px;height:200px";
