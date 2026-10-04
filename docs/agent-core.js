@@ -86,7 +86,10 @@ export async function runPipeline(wasm, engine, plan, ui) {
     const epochs = plan.epochs ?? 30;
 
     const base = plan.gen || engine.genDoc;
-    const render = plan.render || engine.renderDoc;
+    const render = plan.render || ((x) => {
+      if (ArrayBuffer.isView(x)) return x;
+      return engine.renderDoc(x);
+    });
 
     const betterFlat = new Float32Array(nPairs * T * IN);
     const worseFlat = new Float32Array(nPairs * T * IN);
@@ -102,6 +105,12 @@ export async function runPipeline(wasm, engine, plan, ui) {
         wasm.patchifyImage(render(mild, kit), W, H, PATCH, 1);
         wasm.patchifyImage(render(severe, kit), W, H, PATCH, 1);
       } catch (e) {
+        let renderOut = "(not reached)";
+        try {
+          renderOut = dump(render(base(r, 0, kit), kit));
+        } catch (e2) {
+          renderOut = "render itself throws: " + e2.message;
+        }
         const dump = (v) => {
           if (ArrayBuffer.isView(v)) return `[${v.constructor.name} ${v.length}]`;
           if (Array.isArray(v)) return `[array ${v.length}: ${JSON.stringify(v[0]).slice(0,40)}...]`;
@@ -109,8 +118,8 @@ export async function runPipeline(wasm, engine, plan, ui) {
         };
         throw new Error(
           `corruptor/render crash at pair ${p}: ${e.message}. ` +
-          `sample=${dump(sample)} mild=${dump(mild)} severe=${dump(severe)}. ` +
-          `Fix the corruptor or render to return the same shape as the sample.`);
+          `sample=${dump(sample)} mild=${dump(mild)} severe=${dump(severe)} render=${renderOut}. ` +
+          `Fix the corruptor or render to return a Float32Array of ${W * H} floats.`);
       }
       betterFlat.set(
         wasm.patchifyImage(render(mild, kit), W, H, PATCH, 1), p * T * IN);
