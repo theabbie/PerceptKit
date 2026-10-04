@@ -11,7 +11,7 @@
 
 
 import { Agent } from "@earendil-works/pi-agent-core";
-import * as kit from "./kit/synth.js?v=1.1";
+import * as kit from "./kit/synth.js?v=1.2";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 
 const API_ENDPOINT = "https://webiome.abbie.workers.dev/api/stream";
@@ -90,6 +90,7 @@ export async function runPipeline(wasm, engine, plan, ui) {
       if (ArrayBuffer.isView(x)) return x;
       return engine.renderDoc(x);
     });
+    const toImg = (x) => (ArrayBuffer.isView(x) ? x : render(x, kit));
 
     const betterFlat = new Float32Array(nPairs * T * IN);
     const worseFlat = new Float32Array(nPairs * T * IN);
@@ -122,9 +123,9 @@ export async function runPipeline(wasm, engine, plan, ui) {
           `Fix the corruptor or render to return a Float32Array of ${W * H} floats.`);
       }
       betterFlat.set(
-        wasm.patchifyImage(render(mild, kit), W, H, PATCH, 1), p * T * IN);
+        wasm.patchifyImage(toImg(mild), W, H, PATCH, 1), p * T * IN);
       worseFlat.set(
-        wasm.patchifyImage(render(severe, kit), W, H, PATCH, 1), p * T * IN);
+        wasm.patchifyImage(toImg(severe), W, H, PATCH, 1), p * T * IN);
     }
     viz({ type: "update", stage: "data", message: `building ${nPairs} pairwise samples` });
     log(`data: ${nPairs} pairs (mild vs severe), ${T} tokens/seq`);
@@ -143,14 +144,15 @@ export async function runPipeline(wasm, engine, plan, ui) {
     }
     const acc = trainer.evalPairAccuracy(model, betterFlat, worseFlat, seqLens);
     log(`train: final pair loss ${last.toFixed(4)}, train acc ${(acc * 100).toFixed(1)}%`);
+    if (acc < 0.6) log(`warning: train pair acc ${(acc * 100).toFixed(1)}% is near/below chance — the model likely failed to learn the clean-vs-corrupt distinction; check corruptor severity spread`);
 
     
     const r2 = engine.rng((plan.seed ?? 7) + 1000);
     let heldOk = 0, heldN = 0;
     for (let p = 0; p < 40; p++) {
       const sample = base(r2, 0, kit);
-      const clean = wasm.patchifyImage(render(sample, kit), W, H, PATCH, 1);
-      const bad = wasm.patchifyImage(render(corruptor(sample, 0.8, r2, 0, kit), kit), W, H, PATCH, 1);
+      const clean = wasm.patchifyImage(toImg(sample), W, H, PATCH, 1);
+      const bad = wasm.patchifyImage(toImg(corruptor(sample, 0.8, r2, 0, kit)), W, H, PATCH, 1);
       heldN++;
       if (model.score(clean, T) > model.score(bad, T)) heldOk++;
     }
@@ -168,7 +170,7 @@ export async function runPipeline(wasm, engine, plan, ui) {
     return {
       ok: true, kind, model, metrics: [
         { label: "train pair loss", value: last.toFixed(4) },
-        { label: "train pair acc", value: (acc * 100).toFixed(1) + "%" },
+        { label: "train pair acc", value: (acc * 100).toFixed(1) + "%" + (acc < 0.6 ? " (near chance — model likely failed)" : "") },
         { label: "held-out clean>corrupt", value: (heldAcc * 100).toFixed(1) + "%" },
       ], probe: probeOut,
       demoSpec: { kind: "score", W, H, PATCH, inCh: 1 },
@@ -621,6 +623,14 @@ export class PerceptKitAgent {
           let out;
           try { out = fn(sample, 0.5, r, 0, kit); }
           catch (err) { throw withStack(err, "corruptor smoke test"); }
+          try {
+            const img = ArrayBuffer.isView(out) ? out : (plan.render ? plan.render(out, kit) : out);
+            const W = plan.img_w ?? self.engine.DOC_W, H = plan.img_h ?? self.engine.DOC_H;
+            const P = plan.patch ?? self.engine.DOC_PATCH;
+            self.pkg.patchifyImage(ArrayBuffer.isView(img) ? img : out, W, H, P, 1);
+          } catch (err) {
+            throw new Error("corruptor output failed the render/patchify path: " + String(err).slice(0, 120));
+          }
           const sameShape = out && typeof out === typeof sample &&
             (ArrayBuffer.isView(sample) ? out.length === sample.length : true);
           if (!sameShape) {
