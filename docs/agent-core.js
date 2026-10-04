@@ -11,7 +11,7 @@
 
 
 import { Agent } from "@earendil-works/pi-agent-core";
-import * as kit from "./kit/synth.js?v=1.7";
+import * as kit from "./kit/synth.js?v=1.8";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 
 const API_ENDPOINT = "https://webiome.abbie.workers.dev/api/stream";
@@ -604,7 +604,7 @@ export class PerceptKitAgent {
           labels: Type.Array(Type.String(), { description: "Class names (dense_mse) or ['quality'] (score_pair)" }),
           training_kind: Type.String({ description: "'dense_mse' or 'score_pair'" }),
           corruptors: Type.Array(Type.String(), { description: "Names of corruptors to write next" }),
-          gen: Type.Optional(Type.String({ description: "Optional data generator function source: function(rng, label) -> sample. Omit to use built-in digits/docs/scenes." })),
+          gen: Type.Optional(Type.String({ description: "Optional data generator function source: function(rng, label) -> sample. Omit to use built-in digits/docs/scenes. EVERY sample must vary with rng: randomize positions, sizes, radii, counts from rng() — a gen with fixed layout constants produces near-identical samples and will be rejected." })),
           render: Type.Optional(Type.String({ description: "Optional render function for non-image samples (score_pair): function(sample) -> Float32Array image" })),
           img_w: Type.Optional(Type.Number()),
           img_h: Type.Optional(Type.Number()),
@@ -629,6 +629,35 @@ export class PerceptKitAgent {
           if (args.render) {
             try { plan.render = compileFn(args.render, "render.js"); }
             catch (err) { throw new Error("render compile failed: " + String(err).slice(0, 150)); }
+          }
+          if (plan.gen) {
+            const W = plan.img_w || 32, H = plan.img_h || 32;
+            const perClass = {};
+            for (const lb of plan.labels || []) {
+              const r = self.engine.rng(7);
+              const imgs = [];
+              for (let i = 0; i < 5; i++) {
+                let s;
+                try { s = plan.gen(r, lb); }
+                catch (err) { throw new Error("gen crashed on label '" + lb + "': " + String(err).slice(0, 150)); }
+                imgs.push(ArrayBuffer.isView(s) ? s : plan.render(s, kit));
+              }
+              let sum = 0, pairs = 0;
+              for (let i = 0; i < imgs.length; i++)
+                for (let j = i + 1; j < imgs.length; j++) {
+                  const A = imgs[i], B = imgs[j];
+                  let d = 0, n = 0;
+                  for (let k = 0; k < Math.min(A.length, B.length); k++) { d += Math.abs(A[k] - B[k]); n++; }
+                  sum += n ? d / n : 0;
+                  pairs++;
+                }
+              perClass[lb] = pairs ? sum / pairs : 0;
+            }
+            const worst = Object.entries(perClass).sort((a, b) => a[1] - b[1])[0];
+            if (worst && worst[1] < 0.02) {
+              throw new Error("gen rejected: samples for label '" + worst[0] + "' are near-identical across rng draws (mean pixel diff " + worst[1].toFixed(4) + " < 0.02). The model would memorize one layout per class and fail on anything else. Vary EVERY sample: randomize positions, sizes, radii, counts, orientations from rng() — do not use fixed constants for layout.");
+            }
+            self.ui?.log?.("gen diversity ok: " + Object.entries(perClass).map(([k, v]) => k + "=" + v.toFixed(3)).join(", "));
           }
           self.state.plan = plan;
           self.ui?.log?.(`plan: kind=${plan.training_kind}, labels=${(plan.labels || []).join(",")}, corruptors=${(plan.corruptors || []).join(",")}`);

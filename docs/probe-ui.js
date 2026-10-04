@@ -1,4 +1,4 @@
-import * as viz from "./kit/viz.js?v=1.7";
+import * as viz from "./kit/viz.js?v=1.8";
 
 export function renderProbe(canvas, probeOut, model, engine, wasm) {
   if (!canvas) return;
