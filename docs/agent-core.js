@@ -11,7 +11,7 @@
 
 
 import { Agent } from "@earendil-works/pi-agent-core";
-import * as kit from "./kit/synth.js?v=1.8";
+import * as kit from "./kit/synth.js?v=1.9";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 
 const API_ENDPOINT = "https://webiome.abbie.workers.dev/api/stream";
@@ -174,10 +174,21 @@ export async function runPipeline(wasm, engine, plan, ui) {
         log("probe: ok");
       } catch (err) { log("probe error: " + String(err).slice(0, 120)); }
     }
+    if (heldAcc < 0.7) {
+      return {
+        ok: false, kind, model: null, metrics: [
+          { label: "train pair loss", value: last.toFixed(4) },
+          { label: "train pair acc", value: (acc * 100).toFixed(1) + "%" },
+          { label: "held-out clean>corrupt", value: (heldAcc * 100).toFixed(1) + "% (below 70% gate)" },
+        ], probe: probeOut,
+        demoSpec: { kind: "score", W, H, PATCH, inCh: 1 },
+        error: "held-out clean>corrupt is " + (heldAcc * 100).toFixed(1) + "% — the model cannot reliably rank clean above corrupted. Do NOT export it or build a demo on it. Call plan_label_set again: make the corruption degrade the concept more strongly (severity~1 should barely belong to the class) or make the clean samples more canonical.",
+      };
+    }
     return {
       ok: true, kind, model, metrics: [
         { label: "train pair loss", value: last.toFixed(4) },
-        { label: "train pair acc", value: (acc * 100).toFixed(1) + "%" + (acc < 0.6 ? " (near chance — model likely failed)" : "") },
+        { label: "train pair acc", value: (acc * 100).toFixed(1) + "%" },
         { label: "held-out clean>corrupt", value: (heldAcc * 100).toFixed(1) + "%" },
       ], probe: probeOut,
       demoSpec: { kind: "score", W, H, PATCH, inCh: 1 },
@@ -300,6 +311,18 @@ export async function runPipeline(wasm, engine, plan, ui) {
       log(`selecting round ${best.metrics ? "best" : ""} model @ ${(best.acc * 100).toFixed(1)}% over last ${(roundMetrics.acc * 100).toFixed(1)}%`);
       model = best.model; roundMetrics = best.metrics; probeOut = best.probe;
     }
+  }
+
+  const chance = 1 / nLabels;
+  if (best.acc < chance + 0.15) {
+    return {
+      ok: false, kind: "dense_mse", model: null, metrics: [
+        { label: "final loss (last round)", value: roundMetrics.loss.toFixed(4) },
+        { label: "held-out acc (best round)", value: (best.acc * 100).toFixed(1) + "% (chance = " + (chance * 100).toFixed(0) + "%)" },
+        { label: "iterations", value: String(adv.iteration + 1) },
+      ], probe: probeOut, perClass: roundMetrics.perClass, perClassTot: roundMetrics.perClassTot,
+      error: "held-out accuracy " + (best.acc * 100).toFixed(1) + "% is within 15 points of chance (" + (chance * 100).toFixed(0) + "% for " + nLabels + " labels) — this model has NOT learned the concept. Do NOT export it or build a demo on it. Call plan_label_set again and fix the data: make the classes more visually distinct (larger separation, more contrast, fewer distractors), or simplify the task. A demo on a chance model shows random verdicts.",
+    };
   }
 
   return {
@@ -744,8 +767,11 @@ export class PerceptKitAgent {
           } catch (err) {
             throw withStack(err, "pipeline (likely a gen/render/corruptor bug)");
           }
+          if (result.error) {
+            self.state.result = null;
+            throw new Error(result.error);
+          }
           self.state.result = result;
-          if (result.error) throw new Error(result.error);
           const summary = result.metrics.map((m) => `${m.label}: ${m.value}`).join("; ");
           return ok(
             `Pipeline done (${result.kind}, ${result.model.nParams()} params). ${summary}` +

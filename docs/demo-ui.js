@@ -1,5 +1,5 @@
-import { DrawPad } from "./kit/canvas.js?v=1.8";
-import * as viz from "./kit/viz.js?v=1.8";
+import { DrawPad } from "./kit/canvas.js?v=1.9";
+import * as viz from "./kit/viz.js?v=1.9";
 
 export function demoInfer(px, model, wasm, spec, session) {
   let min = 255, max = 0;
