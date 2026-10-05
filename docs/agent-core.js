@@ -11,7 +11,7 @@
 
 
 import { Agent } from "@earendil-works/pi-agent-core";
-import * as kit from "./kit/synth.js?v=1.10";
+import * as kit from "./kit/synth.js?v=1.11";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 
 const API_ENDPOINT = "https://webiome.abbie.workers.dev/api/stream";
@@ -633,7 +633,7 @@ export class PerceptKitAgent {
           img_h: Type.Optional(Type.Number()),
           patch: Type.Optional(Type.Number()),
           in_channels: Type.Optional(Type.Number()),
-          out_channels: Type.Optional(Type.Number()),
+          out_channels: Type.Optional(Type.Number({ description: "Per-patch output channels. For classify, OMIT it — it defaults to the number of labels, which is what dense_mse targets expect." })),
           n_per_class: Type.Optional(Type.Number({ description: "Samples per class (default 60)" })),
           n_pairs: Type.Optional(Type.Number({ description: "Pairs for score_pair (default 120)" })),
           epochs: Type.Optional(Type.Number({ description: "Training epochs (default 80 dense / 30 pair)" })),
