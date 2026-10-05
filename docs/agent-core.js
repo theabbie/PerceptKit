@@ -11,7 +11,7 @@
 
 
 import { Agent } from "@earendil-works/pi-agent-core";
-import * as kit from "./kit/synth.js?v=1.9";
+import * as kit from "./kit/synth.js?v=1.10";
 import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 
 const API_ENDPOINT = "https://webiome.abbie.workers.dev/api/stream";
@@ -240,7 +240,7 @@ export async function runPipeline(wasm, engine, plan, ui) {
     const perClass = new Array(nLabels).fill(0);
     const perClassTot = new Array(nLabels).fill(0);
     const mismatches = [];
-    for (let i = 0; i < 10 * nLabels; i++) {
+    for (let i = 0; i < 30 * nLabels; i++) {
       const label = i % nLabels;
       const raw = gen(r2, label, kit);
       const img = corruptor(raw, adv.severity, r2, label, kit);
@@ -332,7 +332,7 @@ export async function runPipeline(wasm, engine, plan, ui) {
       { label: "iterations", value: String(adv.iteration + 1) },
     ], probe: probeOut, perClass: roundMetrics.perClass, perClassTot: roundMetrics.perClassTot,
     demoSpec: {
-      kind: "classify", W, H, PATCH, inCh,
+      kind: "classify", W, H, PATCH, inCh, outCh: OUT,
       labels: plan.labels || Array.from({ length: nLabels }, (_, i) => String(i)),
     },
   };

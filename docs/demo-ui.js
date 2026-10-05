@@ -1,5 +1,5 @@
-import { DrawPad } from "./kit/canvas.js?v=1.9";
-import * as viz from "./kit/viz.js?v=1.9";
+import { DrawPad } from "./kit/canvas.js?v=1.10";
+import * as viz from "./kit/viz.js?v=1.10";
 
 export function demoInfer(px, model, wasm, spec, session) {
   let min = 255, max = 0;
@@ -12,9 +12,10 @@ export function demoInfer(px, model, wasm, spec, session) {
   if (spec.kind === "classify") {
     const raw = model.transform(tokens, T);
     const nC = spec.labels.length;
+    const OUTW = spec.outCh || nC;
     const scores = new Array(nC).fill(0);
     for (let t = 0; t < T; t++)
-      for (let c = 0; c < nC; c++) scores[c] += raw[t * nC + c];
+      for (let c = 0; c < nC; c++) scores[c] += raw[t * OUTW + c];
     const best = scores.indexOf(Math.max(...scores));
     const mx = Math.max(...scores), mn = Math.min(...scores);
     const span = (mx - mn) || 1;
